@@ -479,25 +479,7 @@ class MusicControlView(View):
         await player.disconnect()
         await interaction.response.send_message("⏹️ Playback stopped and disconnected.", ephemeral=True)
 
-    # --------------------------------------------------------------------------
-    # ROW 3: SPOTIFY & DASHBOARD
-    # --------------------------------------------------------------------------
-    @button(label="Save to Spotify", style=ButtonStyle.success, emoji="💚", custom_id="kushida:save_spotify", row=2)
-    async def spotify_save_btn(self, btn: Button, interaction: discord.Interaction):
-        player = self._get_player(interaction)
-        if not player or not player.current:
-            await interaction.response.send_message("❌ No track is currently playing to save.", ephemeral=True)
-            return
 
-        # Defer to allow Spotify API lookup
-        await interaction.response.defer(ephemeral=True)
-
-        cog = interaction.client.get_cog("Audio")
-        if cog and hasattr(cog, "save_track_for_user"):
-            result = await cog.save_track_for_user(interaction.user.id, player.current)
-            await interaction.followup.send(result["message"], ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Spotify service integration unavailable.", ephemeral=True)
 
     # --------------------------------------------------------------------------
     # REFRESH HELPER
