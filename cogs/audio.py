@@ -114,14 +114,16 @@ class Audio(commands.Cog):
 
     @commands.Cog.listener()
     async def on_wavelink_track_end(self, payload: wavelink.TrackEndEventPayload) -> None:
-        """Triggered when track ends."""
+        """Triggered when track ends. Automatically advances queue if needed."""
         player: wavelink.Player = payload.player
         logger.debug(f"Track '{payload.track.title}' finished with reason: {payload.reason}")
 
-        # If queue is empty and not playing, clean up panel
-        if player and player.queue.is_empty and not player.playing:
-            # Let it linger for a bit or update embed
-            pass
+        if player and not player.queue.is_empty and not player.playing:
+            try:
+                next_track = player.queue.get()
+                await player.play(next_track)
+            except Exception as e:
+                logger.error(f"Error auto-advancing track in on_wavelink_track_end: {e}")
 
     @commands.Cog.listener()
     async def on_wavelink_track_exception(self, payload: wavelink.TrackExceptionEventPayload) -> None:
