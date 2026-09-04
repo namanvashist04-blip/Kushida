@@ -1,48 +1,32 @@
 """
 ================================================================================
   KUSHIDA — LUXURY DISCORD MUSIC ARCHITECTURE
-  MODULE: cogs/audio.py (Wavelink 3.x Audio Engine, Playback & Spotify Sync)
+  MODULE: cogs/audio.py (Wavelink 3.x Music Engine: Dual Slash & Prefix)
 ================================================================================
 """
 
 import asyncio
 import logging
-import time
+import re
+import urllib.parse
 from typing import Optional, Dict, Any, List
+import aiohttp
 import discord
 from discord.ext import commands
-from discord.commands import SlashCommandGroup, slash_command
-from discord import Option, OptionChoice
-
+from discord.commands import slash_command, Option
 import wavelink
-import spotipy
-from spotipy.oauth2 import SpotifyOAuth
 
 from config import (
-    HEX_DEEP_SPACE,
     HEX_VIOLET,
     HEX_ICE_BLUE,
     HEX_EMERALD,
     HEX_ROSE,
-    ICON_DISC,
-    ICON_PLAY,
-    ICON_PAUSE,
-    ICON_NEXT,
-    ICON_STOP,
-    ICON_SPOTIFY,
-    ICON_AI,
-    ICON_TIMER,
-    SPOTIFY_CLIENT_ID,
-    SPOTIFY_CLIENT_SECRET,
-    SPOTIFY_REDIRECT_URI,
-    API_BASE_URL,
 )
 from database import db_manager
 from utils.luxury_ui import (
     LuxuryEmbedBuilder,
     MusicControlView,
     format_ms,
-    DynamicColorEngine,
 )
 
 logger = logging.getLogger("kushida.audio")
@@ -50,16 +34,14 @@ logger = logging.getLogger("kushida.audio")
 
 class Audio(commands.Cog):
     """
-    Luxury Audio Cog powered by Wavelink 3.x (Lavalink v4).
-    Features lag-free streaming, studio-grade filters, fadeout sleep timer, and Spotify sync.
+    Music Commands cog for Kushida.
+    Features: play, skip, stop, pause, resume, queue, nowplaying, volume,
+              shuffle, loop, clearqueue, lyrics (both Slash and Prefix).
     """
 
-    def __init__(self, bot: discord.Bot):
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # Internal track history per guild: guild_id -> list of played Playables
         self.history: Dict[int, List[wavelink.Playable]] = {}
-        # Active sleep timer tasks: guild_id -> asyncio.Task
-        self.sleep_tasks: Dict[int, asyncio.Task] = {}
         self._view: Optional[MusicControlView] = None
 
     @property
@@ -70,14 +52,12 @@ class Audio(commands.Cog):
         return self._view
 
     # --------------------------------------------------------------------------
-    # 1. WAVELINK EVENT LISTENERS (3.x Payload Architecture)
+    # WAVELINK EVENT LISTENERS
     # --------------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_wavelink_node_ready(self, payload: wavelink.NodeReadyEventPayload) -> None:
         """Fired when Lavalink node connects and is ready."""
-        logger.info(
-            f"Lavalink Node '{payload.node.identifier}' is READY! (Resumed: {payload.resumed})"
-        )
+        logger.info(f"Lavalink Node '{payload.node.identifier}' is READY! (Resumed: {payload.resumed})")
 
     @commands.Cog.listener()
     async def on_wavelink_track_start(self, payload: wavelink.TrackStartEventPayload) -> None:
@@ -89,15 +69,13 @@ class Audio(commands.Cog):
             return
 
         guild_id = player.guild.id
-
-        # Maintain history stack
         if guild_id not in self.history:
             self.history[guild_id] = []
         self.history[guild_id].append(track)
         if len(self.history[guild_id]) > 50:
             self.history[guild_id].pop(0)
 
-        # Log to async SQLite database for user stats and VibeMatch
+        # Log to async SQLite database
         requester_id = getattr(track, "requester_id", None)
         if requester_id:
             await db_manager.log_listen(
@@ -123,7 +101,12 @@ class Audio(commands.Cog):
                 next_track = player.queue.get()
                 await player.play(next_track)
             except Exception as e:
-                logger.error(f"Error auto-advancing track in on_wavelink_track_end: {e}")
+                logger.error(f"Error auto-advancing track: {e}")
+        elif player and player.queue.is_empty:
+            # Check 24/7 setting before ever disconnecting
+            is_247 = await db_manager.get_guild_247(player.guild.id)
+            if not is_247:
+                logger.info(f"Queue ended in guild {player.guild.id}. 24/7 is disabled.")
 
     @commands.Cog.listener()
     async def on_wavelink_track_exception(self, payload: wavelink.TrackExceptionEventPayload) -> None:
@@ -144,7 +127,7 @@ class Audio(commands.Cog):
                 await channel.send(embed=err_embed, delete_after=10)
 
     # --------------------------------------------------------------------------
-    # 2. PERSISTENT PANEL MANAGER
+    # PERSISTENT PANEL MANAGER
     # --------------------------------------------------------------------------
     async def _render_or_update_panel(self, player: wavelink.Player, track: wavelink.Playable) -> None:
         """Updates the existing control embed in-place or creates a new one cleanly."""
@@ -181,9 +164,6 @@ class Audio(commands.Cog):
         except Exception as e:
             logger.error(f"Error rendering persistent panel in guild {player.guild.id}: {e}")
 
-    # --------------------------------------------------------------------------
-    # 3. HELPER: PLAY PREVIOUS TRACK
-    # --------------------------------------------------------------------------
     async def play_previous_track(self, guild_id: int) -> bool:
         """Pops and replays the previous track from history."""
         guild = self.bot.get_guild(guild_id)
@@ -196,176 +176,43 @@ class Audio(commands.Cog):
         if len(guild_history) < 2:
             return False
 
-        # Pop current, and get previous
         guild_history.pop()  # Remove current
         prev_track = guild_history.pop()  # Get previous
-
-        # Put current to front of queue, play previous
         await player.play(prev_track)
         return True
 
     # --------------------------------------------------------------------------
-    # 4. HELPER: GRADUAL SLEEP TIMER (Fadeout)
+    # 1. PLAY (Slash: /play | Prefix: -play, -p)
     # --------------------------------------------------------------------------
-    async def start_sleep_timer(self, guild_id: int, minutes: int) -> None:
-        """
-        Schedules a sleep timer that gently fades volume from current % to 0
-        over the final 30 seconds before disconnecting.
-        """
-        # Cancel any existing sleep timer task
-        if guild_id in self.sleep_tasks and not self.sleep_tasks[guild_id].done():
-            self.sleep_tasks[guild_id].cancel()
-
-        async def _timer_worker():
-            try:
-                total_wait_sec = minutes * 60
-                fade_duration_sec = 30
-
-                if total_wait_sec > fade_duration_sec:
-                    await asyncio.sleep(total_wait_sec - fade_duration_sec)
-
-                guild = self.bot.get_guild(guild_id)
-                if not guild or not guild.voice_client:
-                    return
-
-                player: wavelink.Player = guild.voice_client
-                start_vol = player.volume
-                steps = 30
-
-                # 30-second smooth fadeout
-                for step in range(steps):
-                    fraction = (steps - step - 1) / steps
-                    new_vol = int(start_vol * fraction)
-                    if player.connected:
-                        await player.set_volume(new_vol)
-                    await asyncio.sleep(1.0)
-
-                # Final disconnect
-                if player.connected:
-                    player.queue.clear()
-                    await player.disconnect()
-                    logger.info(f"Sleep timer executed: Disconnected guild {guild_id}")
-
-            except asyncio.CancelledError:
-                logger.info(f"Sleep timer cancelled for guild {guild_id}")
-
-        task = asyncio.create_task(_timer_worker())
-        self.sleep_tasks[guild_id] = task
-
-    # --------------------------------------------------------------------------
-    # 5. HELPER: SPOTIFY SAVE TO LIKED SONGS
-    # --------------------------------------------------------------------------
-    async def save_track_for_user(self, user_id: int, track: wavelink.Playable) -> Dict[str, Any]:
-        """
-        Saves the track to user's Spotify 'Liked Songs' via spotipy.
-        Prompts authentication link if user has not linked Spotify.
-        """
-        if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
-            return {"success": False, "message": "⚠️ Spotify API credentials are not configured in the bot's `.env`."}
-
-        creds = await db_manager.get_spotify_token(user_id)
-        if not creds:
-            auth_url = f"{API_BASE_URL}/api/spotify/login?user_id={user_id}"
-            return {
-                "success": False,
-                "message": (
-                    f"🔗 **Spotify Not Linked!**\n"
-                    f"Click here to authorize Kushida to save songs to your library:\n"
-                    f"[👉 **Connect Spotify Account**]({auth_url})"
-                )
-            }
-
-        # Handle token expiration & refresh
-        access_token = creds["spotify_access_token"]
-        expires_at = creds["spotify_expires_at"]
-        refresh_token = creds["spotify_refresh_token"]
-
-        if time.time() > (expires_at - 60):
-            try:
-                sp_oauth = SpotifyOAuth(
-                    client_id=SPOTIFY_CLIENT_ID,
-                    client_secret=SPOTIFY_CLIENT_SECRET,
-                    redirect_uri=SPOTIFY_REDIRECT_URI
-                )
-                new_token_info = sp_oauth.refresh_access_token(refresh_token)
-                access_token = new_token_info["access_token"]
-                await db_manager.save_spotify_token(
-                    user_id=user_id,
-                    access_token=access_token,
-                    refresh_token=new_token_info.get("refresh_token", refresh_token),
-                    expires_at=new_token_info["expires_at"]
-                )
-            except Exception as e:
-                logger.error(f"Failed to refresh Spotify token for user {user_id}: {e}")
-                auth_url = f"{API_BASE_URL}/api/spotify/login?user_id={user_id}"
-                return {
-                    "success": False,
-                    "message": f"⚠️ Spotify token expired. Please [**re-authorize here**]({auth_url})."
-                }
-
-        # Search track on Spotify and save
-        try:
-            sp = spotipy.Spotify(auth=access_token)
-            clean_title = track.title.split("(")[0].split("[")[0].strip()
-            author = getattr(track, "author", "")
-            q = f"{clean_title} {author}".strip()
-
-            results = sp.search(q=q, type="track", limit=1)
-            items = results.get("tracks", {}).get("items", [])
-
-            if not items:
-                # Retry with title only
-                results = sp.search(q=clean_title, type="track", limit=1)
-                items = results.get("tracks", {}).get("items", [])
-
-            if not items:
-                return {"success": False, "message": f"❌ Could not match **{track.title}** on Spotify."}
-
-            spotify_track = items[0]
-            sp.current_user_saved_tracks_add(tracks=[spotify_track["id"]])
-
-            sp_title = spotify_track["name"]
-            sp_artist = spotify_track["artists"][0]["name"]
-            sp_url = spotify_track["external_urls"]["spotify"]
-
-            return {
-                "success": True,
-                "message": f"💚 **Saved to Spotify Liked Songs!**\n[**{sp_title}** by `{sp_artist}`]({sp_url})"
-            }
-        except Exception as e:
-            logger.error(f"Spotify API save error for user {user_id}: {e}")
-            return {"success": False, "message": f"❌ Spotify error: `{str(e)}`"}
-
-    # --------------------------------------------------------------------------
-    # 6. SLASH COMMANDS
-    # --------------------------------------------------------------------------
-    @slash_command(name="play", description="Stream a song, playlist, or URL in ultra-high quality.")
-    async def play_command(
-        self,
-        ctx: discord.ApplicationContext,
-        query: Option(str, "Song title, artist, YouTube, or SoundCloud link", required=True)
-    ):
-        """Slash command to search and queue audio."""
+    async def _do_play(self, ctx, query: str):
         if not ctx.author.voice or not ctx.author.voice.channel:
-            await ctx.respond("❌ You must join a voice channel first!", ephemeral=True)
+            msg = "❌ You must be connected to a voice channel first!"
+            if isinstance(ctx, discord.ApplicationContext):
+                await ctx.respond(msg, ephemeral=True)
+            else:
+                await ctx.send(msg)
             return
 
-        await ctx.defer()
+        if isinstance(ctx, discord.ApplicationContext):
+            await ctx.defer()
 
-        # Connect or fetch player
+        # Connect or get player
         player: wavelink.Player
         if not ctx.voice_client:
             player = await ctx.author.voice.channel.connect(cls=wavelink.Player)
         else:
             player = ctx.voice_client
 
-        # Store caller text channel for panel updates
         player.text_channel = ctx.channel
 
-        # Search playable tracks
+        # Search tracks
         search_results: wavelink.Search = await wavelink.Playable.search(query)
         if not search_results:
-            await ctx.respond(f"❌ No audio results found for `{query}`.", ephemeral=True)
+            err = f"❌ No audio results found for `{query}`."
+            if isinstance(ctx, discord.ApplicationContext):
+                await ctx.respond(err, ephemeral=True)
+            else:
+                await ctx.send(err)
             return
 
         if isinstance(search_results, wavelink.Playlist):
@@ -377,14 +224,21 @@ class Audio(commands.Cog):
                 description=f"Added **{search_results.name}** (`{added} tracks`) to the queue.",
                 color=HEX_VIOLET
             )
-            await ctx.respond(embed=embed)
+            if isinstance(ctx, discord.ApplicationContext):
+                await ctx.respond(embed=embed)
+            else:
+                await ctx.send(embed=embed)
         else:
             track: wavelink.Playable = search_results[0]
             setattr(track, "requester_id", ctx.author.id)
             await player.queue.put_wait(track)
 
             if not player.playing:
-                await ctx.respond(f"🎵 Starting playback for **{track.title}**...")
+                msg = f"🎵 Starting playback for **{track.title}**..."
+                if isinstance(ctx, discord.ApplicationContext):
+                    await ctx.respond(msg)
+                else:
+                    await ctx.send(msg)
             else:
                 embed = discord.Embed(
                     title="➕ Track Queued",
@@ -393,192 +247,450 @@ class Audio(commands.Cog):
                 )
                 if getattr(track, "artwork_url", None):
                     embed.set_thumbnail(url=track.artwork_url)
-                await ctx.respond(embed=embed)
+                if isinstance(ctx, discord.ApplicationContext):
+                    await ctx.respond(embed=embed)
+                else:
+                    await ctx.send(embed=embed)
 
-        # Start playback if currently idle
         if not player.playing and not player.queue.is_empty:
+            if player.paused:
+                await player.pause(False)
             next_track = player.queue.get()
             await player.play(next_track)
 
-    @slash_command(name="pause", description="Pause or resume current playback.")
-    async def pause_command(self, ctx: discord.ApplicationContext):
-        """Toggle pause."""
-        player: Optional[wavelink.Player] = ctx.voice_client
-        if not player or not player.connected:
-            await ctx.respond("❌ Nothing is currently playing.", ephemeral=True)
+    @slash_command(name="play", description="Gaana chalane ke liye (Song ka naam ya link dalein).")
+    async def play_slash(
+        self,
+        ctx: discord.ApplicationContext,
+        query: Option(str, "Song title, artist name, YouTube or Spotify link", required=True)
+    ):
+        await self._do_play(ctx, query)
+
+    @commands.command(name="play", aliases=["p"], help="Gaana chalayein.")
+    async def play_prefix(self, ctx: commands.Context, *, query: str = None):
+        if not query:
+            await ctx.send("❌ Please provide a song name or link! Example: `-play despacito`")
             return
+        await self._do_play(ctx, query)
 
-        if player.paused:
-            await player.pause(False)
-            await ctx.respond("▶️ Resumed playback.")
-        else:
-            await player.pause(True)
-            await ctx.respond("⏸️ Paused playback.")
-
-    @slash_command(name="skip", description="Skip the current track.")
-    async def skip_command(self, ctx: discord.ApplicationContext):
-        """Skip current track."""
+    # --------------------------------------------------------------------------
+    # 2. SKIP (Slash: /skip | Prefix: -skip, -s)
+    # --------------------------------------------------------------------------
+    async def _do_skip(self, ctx):
         player: Optional[wavelink.Player] = ctx.voice_client
         if not player or not player.playing:
-            await ctx.respond("❌ Nothing is currently playing to skip.", ephemeral=True)
+            msg = "❌ Nothing is currently playing to skip."
+            if isinstance(ctx, discord.ApplicationContext):
+                await ctx.respond(msg, ephemeral=True)
+            else:
+                await ctx.send(msg)
             return
 
         await player.skip()
-        await ctx.respond("⏭️ Skipped current track.")
-
-    @slash_command(name="previous", description="Replay the previous track from history.")
-    async def previous_command(self, ctx: discord.ApplicationContext):
-        """Play previous track."""
-        success = await self.play_previous_track(ctx.guild.id)
-        if success:
-            await ctx.respond("⏮️ Replaying previous track.")
+        msg = "⏭️ Skipped current track."
+        if isinstance(ctx, discord.ApplicationContext):
+            await ctx.respond(msg)
         else:
-            await ctx.respond("❌ No previous track found in history.", ephemeral=True)
+            await ctx.send(msg)
 
-    @slash_command(name="stop", description="Stop playback, clear queue, and disconnect.")
-    async def stop_command(self, ctx: discord.ApplicationContext):
-        """Stop and disconnect."""
+    @slash_command(name="skip", description="Current chal rahe gaane ko skip karne ke liye.")
+    async def skip_slash(self, ctx: discord.ApplicationContext):
+        await self._do_skip(ctx)
+
+    @commands.command(name="skip", aliases=["s"], help="Current gaane ko skip karein.")
+    async def skip_prefix(self, ctx: commands.Context):
+        await self._do_skip(ctx)
+
+    # --------------------------------------------------------------------------
+    # 3. STOP (Slash: /stop | Prefix: -stop)
+    # --------------------------------------------------------------------------
+    async def _do_stop(self, ctx):
         player: Optional[wavelink.Player] = ctx.voice_client
         if not player or not player.connected:
-            await ctx.respond("❌ Bot is not connected to a voice channel.", ephemeral=True)
+            msg = "❌ Bot is not connected to a voice channel."
+            if isinstance(ctx, discord.ApplicationContext):
+                await ctx.respond(msg, ephemeral=True)
+            else:
+                await ctx.send(msg)
             return
 
         player.queue.clear()
         await player.disconnect()
-        await ctx.respond("⏹️ Playback stopped and disconnected.")
+        msg = "⏹️ Music stopped, queue cleared, and bot disconnected."
+        if isinstance(ctx, discord.ApplicationContext):
+            await ctx.respond(msg)
+        else:
+            await ctx.send(msg)
 
-    @slash_command(name="queue", description="View the current upcoming queue.")
-    async def queue_command(
-        self,
-        ctx: discord.ApplicationContext,
-        page: Option(int, "Queue page number", default=1, min_value=1, required=False)
-    ):
-        """Show paginated queue."""
+    @slash_command(name="stop", description="Music band karne aur poori queue delete karne ke liye.")
+    async def stop_slash(self, ctx: discord.ApplicationContext):
+        await self._do_stop(ctx)
+
+    @commands.command(name="stop", help="Music band karein aur queue clear karein.")
+    async def stop_prefix(self, ctx: commands.Context):
+        await self._do_stop(ctx)
+
+    # --------------------------------------------------------------------------
+    # 4. PAUSE (Slash: /pause | Prefix: -pause)
+    # --------------------------------------------------------------------------
+    async def _do_pause(self, ctx):
+        player: Optional[wavelink.Player] = ctx.voice_client
+        if not player or not player.connected or not player.playing:
+            msg = "❌ Nothing is currently playing."
+            if isinstance(ctx, discord.ApplicationContext):
+                await ctx.respond(msg, ephemeral=True)
+            else:
+                await ctx.send(msg)
+            return
+
+        if player.paused:
+            msg = "⏸️ Playback is already paused. Use `/resume` or `-resume` to continue."
+        else:
+            await player.pause(True)
+            msg = "⏸️ Paused playback."
+
+        if isinstance(ctx, discord.ApplicationContext):
+            await ctx.respond(msg)
+        else:
+            await ctx.send(msg)
+
+    @slash_command(name="pause", description="Gaane ko kuch der rokne (pause) ke liye.")
+    async def pause_slash(self, ctx: discord.ApplicationContext):
+        await self._do_pause(ctx)
+
+    @commands.command(name="pause", help="Gaane ko pause karein.")
+    async def pause_prefix(self, ctx: commands.Context):
+        await self._do_pause(ctx)
+
+    # --------------------------------------------------------------------------
+    # 5. RESUME (Slash: /resume | Prefix: -resume, -r)
+    # --------------------------------------------------------------------------
+    async def _do_resume(self, ctx):
+        player: Optional[wavelink.Player] = ctx.voice_client
+        if not player or not player.connected:
+            msg = "❌ Bot is not connected to a voice channel."
+            if isinstance(ctx, discord.ApplicationContext):
+                await ctx.respond(msg, ephemeral=True)
+            else:
+                await ctx.send(msg)
+            return
+
+        if not player.paused:
+            msg = "▶️ Playback is already running."
+        else:
+            await player.pause(False)
+            msg = "▶️ Resumed playback."
+
+        if isinstance(ctx, discord.ApplicationContext):
+            await ctx.respond(msg)
+        else:
+            await ctx.send(msg)
+
+    @slash_command(name="resume", description="Pause kiye gaye gaane ko fir se chalu karne ke liye.")
+    async def resume_slash(self, ctx: discord.ApplicationContext):
+        await self._do_resume(ctx)
+
+    @commands.command(name="resume", aliases=["r"], help="Paused gaana chalu karein.")
+    async def resume_prefix(self, ctx: commands.Context):
+        await self._do_resume(ctx)
+
+    # --------------------------------------------------------------------------
+    # 6. QUEUE (Slash: /queue | Prefix: -queue, -q)
+    # --------------------------------------------------------------------------
+    async def _do_queue(self, ctx, page: int = 1):
         player: Optional[wavelink.Player] = ctx.voice_client
         if not player or (not player.playing and player.queue.is_empty):
-            await ctx.respond("❌ The queue is completely empty.", ephemeral=True)
+            msg = "❌ The queue is completely empty."
+            if isinstance(ctx, discord.ApplicationContext):
+                await ctx.respond(msg, ephemeral=True)
+            else:
+                await ctx.send(msg)
             return
 
         embed = LuxuryEmbedBuilder.queue_embed(player, page=page)
-        await ctx.respond(embed=embed)
-
-    @slash_command(name="volume", description="Set audio volume (0-200%).")
-    async def volume_command(
-        self,
-        ctx: discord.ApplicationContext,
-        volume: Option(int, "Volume level percentage", min_value=0, max_value=200, required=True)
-    ):
-        """Set volume."""
-        player: Optional[wavelink.Player] = ctx.voice_client
-        if not player or not player.connected:
-            await ctx.respond("❌ Bot is not in a voice channel.", ephemeral=True)
-            return
-
-        await player.set_volume(volume)
-        await ctx.respond(f"🔊 Volume set to **{volume}%**.")
-
-    @slash_command(name="seek", description="Seek to a specific timestamp in the current track.")
-    async def seek_command(
-        self,
-        ctx: discord.ApplicationContext,
-        seconds: Option(int, "Timestamp in seconds", min_value=0, required=True)
-    ):
-        """Seek position."""
-        player: Optional[wavelink.Player] = ctx.voice_client
-        if not player or not player.playing:
-            await ctx.respond("❌ Nothing is currently playing.", ephemeral=True)
-            return
-
-        pos_ms = seconds * 1000
-        await player.seek(pos_ms)
-        await ctx.respond(f"⏩ Seeked to `{format_ms(pos_ms)}`.")
-
-    @slash_command(name="filter", description="Apply studio-grade audio filter presets.")
-    async def filter_command(
-        self,
-        ctx: discord.ApplicationContext,
-        preset: Option(
-            str,
-            "Filter preset to apply",
-            choices=["bassboost", "nightcore", "8d", "vaporwave", "reset"],
-            required=True
-        )
-    ):
-        """Apply Wavelink Filters."""
-        player: Optional[wavelink.Player] = ctx.voice_client
-        if not player or not player.connected:
-            await ctx.respond("❌ Bot is not in a voice channel.", ephemeral=True)
-            return
-
-        filters: wavelink.Filters = player.filters
-        preset = preset.lower()
-
-        if preset == "bassboost":
-            filters.reset()
-            bass_bands = [(0, 0.30), (1, 0.25), (2, 0.20), (3, 0.15), (4, 0.10)]
-            filters.equalizer.set(bands=bass_bands)
-            desc = "🔊 **Bassboost** applied: Low frequencies amplified."
-        elif preset == "nightcore":
-            filters.reset()
-            filters.timescale.set(pitch=1.25, speed=1.25, rate=1.0)
-            desc = "⚡ **Nightcore** applied: 1.25x Speed & Pitch."
-        elif preset == "8d":
-            filters.reset()
-            filters.rotation.set(rotation_hz=0.2)
-            desc = "🎧 **8D Audio** applied: Rotating spatial surround."
-        elif preset == "vaporwave":
-            filters.reset()
-            filters.timescale.set(pitch=0.80, speed=0.85, rate=1.0)
-            desc = "🌊 **Vaporwave** applied: Slowed & Reverb ambience."
-        elif preset == "reset":
-            filters.reset()
-            desc = "✨ **Filters Reset**: Crystal clear studio audio."
+        if isinstance(ctx, discord.ApplicationContext):
+            await ctx.respond(embed=embed)
         else:
-            await ctx.respond("❌ Unknown filter preset.", ephemeral=True)
-            return
+            await ctx.send(embed=embed)
 
-        await player.set_filters(filters)
-        try:
-            from api.server import active_filters
-            active_filters[ctx.guild.id] = preset
-        except Exception:
-            pass
-        embed = discord.Embed(title="🎛️ Audio Processing", description=desc, color=HEX_VIOLET)
-        await ctx.respond(embed=embed)
-
-    @slash_command(name="sleep", description="Set sleep timer with 30s volume fadeout before disconnect.")
-    async def sleep_command(
+    @slash_command(name="queue", description="Line mein lage aage ke sabhi gaano ki list dekhne ke liye.")
+    async def queue_slash(
         self,
         ctx: discord.ApplicationContext,
-        minutes: Option(int, "Minutes until gentle disconnect", min_value=1, max_value=360, required=True)
+        page: Option(int, "Page number", default=1, min_value=1, required=False)
     ):
-        """Schedule sleep timer."""
-        player: Optional[wavelink.Player] = ctx.voice_client
-        if not player or not player.connected:
-            await ctx.respond("❌ Bot is not connected to a voice channel.", ephemeral=True)
-            return
+        await self._do_queue(ctx, page)
 
-        await self.start_sleep_timer(ctx.guild.id, minutes)
-        await ctx.respond(
-            f"💤 **Sleep Timer Set:** Music will gently fade to 0% and disconnect in **{minutes} minutes**."
-        )
+    @commands.command(name="queue", aliases=["q"], help="Upcoming gaano ki list dekhein.")
+    async def queue_prefix(self, ctx: commands.Context, page: int = 1):
+        await self._do_queue(ctx, page)
 
-    @slash_command(name="nowplaying", description="Show or re-send the luxury persistent music panel.")
-    async def nowplaying_command(self, ctx: discord.ApplicationContext):
-        """Re-send the luxury persistent music panel."""
+    # --------------------------------------------------------------------------
+    # 7. NOWPLAYING (Slash: /nowplaying | Prefix: -nowplaying, -np)
+    # --------------------------------------------------------------------------
+    async def _do_nowplaying(self, ctx):
         player: Optional[wavelink.Player] = ctx.voice_client
         if not player or not player.current:
-            await ctx.respond("❌ Nothing is currently playing.", ephemeral=True)
+            msg = "❌ Nothing is currently playing."
+            if isinstance(ctx, discord.ApplicationContext):
+                await ctx.respond(msg, ephemeral=True)
+            else:
+                await ctx.send(msg)
             return
 
         player.text_channel = ctx.channel
         embed = LuxuryEmbedBuilder.now_playing(player, player.current, requested_by=ctx.author)
-        msg = await ctx.respond(embed=embed, view=self.persistent_view)
-        # Store message ID for persistent in-place edits
-        if hasattr(msg, "id"):
-            await db_manager.set_panel_message_id(ctx.guild.id, ctx.channel.id, msg.id)
+        view = self.persistent_view
+
+        if isinstance(ctx, discord.ApplicationContext):
+            msg_obj = await ctx.respond(embed=embed, view=view)
+        else:
+            msg_obj = await ctx.send(embed=embed, view=view)
+
+        if hasattr(msg_obj, "id"):
+            await db_manager.set_panel_message_id(ctx.guild.id, ctx.channel.id, msg_obj.id)
+
+    @slash_command(name="nowplaying", description="Abhi kaun sa gaana chal raha hai, uski details dekhne ke liye.")
+    async def nowplaying_slash(self, ctx: discord.ApplicationContext):
+        await self._do_nowplaying(ctx)
+
+    @commands.command(name="nowplaying", aliases=["np"], help="Current gaane ki details dekhein.")
+    async def nowplaying_prefix(self, ctx: commands.Context):
+        await self._do_nowplaying(ctx)
+
+    # --------------------------------------------------------------------------
+    # 8. VOLUME (Slash: /volume | Prefix: -volume, -v)
+    # --------------------------------------------------------------------------
+    async def _do_volume(self, ctx, volume: int):
+        player: Optional[wavelink.Player] = ctx.voice_client
+        if not player or not player.connected:
+            msg = "❌ Bot is not in a voice channel."
+            if isinstance(ctx, discord.ApplicationContext):
+                await ctx.respond(msg, ephemeral=True)
+            else:
+                await ctx.send(msg)
+            return
+
+        vol_clamped = max(0, min(200, volume))
+        await player.set_volume(vol_clamped)
+        msg = f"🔊 Volume set to **{vol_clamped}%**."
+        if isinstance(ctx, discord.ApplicationContext):
+            await ctx.respond(msg)
+        else:
+            await ctx.send(msg)
+
+    @slash_command(name="volume", description="Bot ki aawaz kam ya tez karne ke liye (e.g., /volume 50).")
+    async def volume_slash(
+        self,
+        ctx: discord.ApplicationContext,
+        volume: Option(int, "Volume level (0-200)", min_value=0, max_value=200, required=True)
+    ):
+        await self._do_volume(ctx, volume)
+
+    @commands.command(name="volume", aliases=["v"], help="Volume kam ya tez karein (e.g., -v 50).")
+    async def volume_prefix(self, ctx: commands.Context, volume: int = None):
+        if volume is None:
+            player: Optional[wavelink.Player] = ctx.voice_client
+            curr = player.volume if player else 100
+            await ctx.send(f"🔊 Current volume is **{curr}%**. Use `-v <0-200>` to change it.")
+            return
+        await self._do_volume(ctx, volume)
+
+    # --------------------------------------------------------------------------
+    # 9. SHUFFLE (Slash: /shuffle | Prefix: -shuffle)
+    # --------------------------------------------------------------------------
+    async def _do_shuffle(self, ctx):
+        player: Optional[wavelink.Player] = ctx.voice_client
+        if not player or len(player.queue) < 2:
+            msg = "❌ Need at least 2 tracks in queue to shuffle."
+            if isinstance(ctx, discord.ApplicationContext):
+                await ctx.respond(msg, ephemeral=True)
+            else:
+                await ctx.send(msg)
+            return
+
+        player.queue.shuffle()
+        msg = f"🔀 Shuffled **{len(player.queue)}** upcoming tracks."
+        if isinstance(ctx, discord.ApplicationContext):
+            await ctx.respond(msg)
+        else:
+            await ctx.send(msg)
+
+    @slash_command(name="shuffle", description="Queue ke gaano ko aage-piche (mix) karne ke liye.")
+    async def shuffle_slash(self, ctx: discord.ApplicationContext):
+        await self._do_shuffle(ctx)
+
+    @commands.command(name="shuffle", help="Queue ko mix karein.")
+    async def shuffle_prefix(self, ctx: commands.Context):
+        await self._do_shuffle(ctx)
+
+    # --------------------------------------------------------------------------
+    # 10. LOOP (Slash: /loop | Prefix: -loop)
+    # --------------------------------------------------------------------------
+    async def _do_loop(self, ctx, mode: Optional[str] = None):
+        player: Optional[wavelink.Player] = ctx.voice_client
+        if not player or not player.connected:
+            msg = "❌ Bot is not in a voice channel."
+            if isinstance(ctx, discord.ApplicationContext):
+                await ctx.respond(msg, ephemeral=True)
+            else:
+                await ctx.send(msg)
+            return
+
+        curr_mode = getattr(player.queue, "mode", wavelink.QueueMode.normal)
+        if mode:
+            m = mode.lower().strip()
+            if m in ["track", "song", "1"]:
+                player.queue.mode = wavelink.QueueMode.loop
+                status = "🔂 **Track Loop** (Current song repeat)"
+            elif m in ["queue", "all"]:
+                player.queue.mode = wavelink.QueueMode.loop_all
+                status = "🔁 **Queue Loop** (Entire queue repeat)"
+            else:
+                player.queue.mode = wavelink.QueueMode.normal
+                status = "➡️ **Loop Disabled** (Normal playback)"
+        else:
+            # Cycle loop mode
+            if curr_mode == wavelink.QueueMode.normal:
+                player.queue.mode = wavelink.QueueMode.loop
+                status = "🔂 **Track Loop** (Current song repeat)"
+            elif curr_mode == wavelink.QueueMode.loop:
+                player.queue.mode = wavelink.QueueMode.loop_all
+                status = "🔁 **Queue Loop** (Entire queue repeat)"
+            else:
+                player.queue.mode = wavelink.QueueMode.normal
+                status = "➡️ **Loop Disabled** (Normal playback)"
+
+        if isinstance(ctx, discord.ApplicationContext):
+            await ctx.respond(f"🔁 Loop Mode: {status}")
+        else:
+            await ctx.send(f"🔁 Loop Mode: {status}")
+
+    @slash_command(name="loop", description="Current gaane ya poori queue ko repeat par lagane ke liye.")
+    async def loop_slash(
+        self,
+        ctx: discord.ApplicationContext,
+        mode: Option(str, "Loop mode: off, track, queue", choices=["off", "track", "queue"], required=False, default=None)
+    ):
+        await self._do_loop(ctx, mode)
+
+    @commands.command(name="loop", help="Song ya queue repeat karein.")
+    async def loop_prefix(self, ctx: commands.Context, mode: str = None):
+        await self._do_loop(ctx, mode)
+
+    # --------------------------------------------------------------------------
+    # 11. CLEARQUEUE (Slash: /clearqueue | Prefix: -clearqueue, -cq)
+    # --------------------------------------------------------------------------
+    async def _do_clearqueue(self, ctx):
+        player: Optional[wavelink.Player] = ctx.voice_client
+        if not player or player.queue.is_empty:
+            msg = "❌ The queue is already empty."
+            if isinstance(ctx, discord.ApplicationContext):
+                await ctx.respond(msg, ephemeral=True)
+            else:
+                await ctx.send(msg)
+            return
+
+        count = len(player.queue)
+        player.queue.clear()
+        msg = f"🗑️ Cleared **{count} tracks** from the queue. Currently playing song was not stopped."
+        if isinstance(ctx, discord.ApplicationContext):
+            await ctx.respond(msg)
+        else:
+            await ctx.send(msg)
+
+    @slash_command(name="clearqueue", description="Bina song roke, aage ke saare gaane list se hatane ke liye.")
+    async def clearqueue_slash(self, ctx: discord.ApplicationContext):
+        await self._do_clearqueue(ctx)
+
+    @commands.command(name="clearqueue", aliases=["cq"], help="Aage ki saari queue clear karein.")
+    async def clearqueue_prefix(self, ctx: commands.Context):
+        await self._do_clearqueue(ctx)
+
+    # --------------------------------------------------------------------------
+    # 12. LYRICS (Slash: /lyrics | Prefix: -lyrics, -ly)
+    # --------------------------------------------------------------------------
+    async def _fetch_lyrics(self, query: str) -> Optional[Dict[str, str]]:
+        """Query LRCLIB free lyrics API."""
+        clean = re.sub(r'[\(\[].*?[\)\]]', '', query).strip()
+        encoded = urllib.parse.quote(clean)
+        url = f"https://lrclib.net/api/search?q={encoded}"
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers={"User-Agent": "Kushida/2.0"}, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data and isinstance(data, list) and len(data) > 0:
+                            item = data[0]
+                            lyrics_text = item.get("plainLyrics") or item.get("syncedLyrics")
+                            if lyrics_text:
+                                return {
+                                    "title": item.get("trackName", clean),
+                                    "artist": item.get("artistName", "Unknown"),
+                                    "lyrics": lyrics_text
+                                }
+        except Exception as e:
+            logger.error(f"Error fetching lyrics for '{clean}': {e}")
+        return None
+
+    async def _do_lyrics(self, ctx, query: Optional[str] = None):
+        player: Optional[wavelink.Player] = ctx.voice_client
+
+        search_term = query
+        if not search_term:
+            if player and player.current:
+                clean_title = re.sub(r'[\(\[].*?[\)\]]', '', player.current.title).strip()
+                search_term = f"{clean_title} {getattr(player.current, 'author', '')}".strip()
+            else:
+                msg = "❌ No song is currently playing. Please specify a song name! (e.g. `/lyrics believer`)"
+                if isinstance(ctx, discord.ApplicationContext):
+                    await ctx.respond(msg, ephemeral=True)
+                else:
+                    await ctx.send(msg)
+                return
+
+        if isinstance(ctx, discord.ApplicationContext):
+            await ctx.defer()
+
+        result = await self._fetch_lyrics(search_term)
+        if not result:
+            err = f"❌ Could not find lyrics for **{search_term}**."
+            if isinstance(ctx, discord.ApplicationContext):
+                await ctx.respond(err)
+            else:
+                await ctx.send(err)
+            return
+
+        lyrics_text = result["lyrics"]
+        if len(lyrics_text) > 3900:
+            lyrics_text = lyrics_text[:3900] + "\n\n...[Lyrics truncated]..."
+
+        embed = discord.Embed(
+            title=f"📜 Lyrics — {result['title']}",
+            description=lyrics_text,
+            color=HEX_VIOLET
+        )
+        embed.set_footer(text=f"Artist: {result['artist']} • Kushida Luxury Sound")
+
+        if isinstance(ctx, discord.ApplicationContext):
+            await ctx.respond(embed=embed)
+        else:
+            await ctx.send(embed=embed)
+
+    @slash_command(name="lyrics", description="Chal rahe gaane ke lyrics (bol) screen par dekhne ke liye.")
+    async def lyrics_slash(
+        self,
+        ctx: discord.ApplicationContext,
+        query: Option(str, "Song title (optional, defaults to now playing song)", required=False, default=None)
+    ):
+        await self._do_lyrics(ctx, query)
+
+    @commands.command(name="lyrics", aliases=["ly"], help="Gaane ke lyrics dekhein.")
+    async def lyrics_prefix(self, ctx: commands.Context, *, query: str = None):
+        await self._do_lyrics(ctx, query)
 
 
-def setup(bot: discord.Bot):
+def setup(bot: commands.Bot):
     """Cog loader for Pycord."""
     bot.add_cog(Audio(bot))
