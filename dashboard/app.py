@@ -1,7 +1,8 @@
 """
 ================================================================================
   KUSHIDA — LUXURY DISCORD MUSIC ARCHITECTURE
-  MODULE: dashboard/app.py (Streamlit Web Remote Dashboard & Terminal)
+  MODULE: dashboard/app.py (Streamlit Premium Web Remote — Spotify-Like UI)
+  ACCESS: Any Discord server member can open this link and control the bot.
 ================================================================================
 """
 
@@ -9,413 +10,502 @@ import streamlit as st
 import requests
 import time
 import os
+import json
 
 # Page Configuration
 st.set_page_config(
     page_title="Kushida — Luxury Web Remote",
     page_icon="🌌",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 # API Configuration
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 
 # ------------------------------------------------------------------------------
-# 1. LUXURY CUSTOM CSS STYLING (Deep Space Black & Neon Accents)
+# 1. LUXURY CSS — PREMIUM SPOTIFY-LIKE DARK THEME
 # ------------------------------------------------------------------------------
 st.markdown("""
 <style>
-    /* Global Reset & Deep Space Background */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
+    /* ===== GLOBAL RESET ===== */
     .stApp {
-        background: #0d0d12 !important;
+        background: linear-gradient(180deg, #0d0d12 0%, #111118 50%, #0a0a10 100%) !important;
         color: #f4f4f5 !important;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
     }
+    .stApp > header { background: transparent !important; }
+    #MainMenu, footer, .stDeployButton { display: none !important; }
 
-    /* Sidebar Styling */
+    /* ===== SIDEBAR ===== */
     section[data-testid="stSidebar"] {
-        background-color: #12121a !important;
-        border-right: 1px solid rgba(107, 33, 168, 0.25) !important;
+        background: linear-gradient(180deg, #111118, #0d0d14) !important;
+        border-right: 1px solid rgba(107, 33, 168, 0.15) !important;
     }
 
-    /* Cards and Glass Panels */
-    .luxury-card {
-        background: linear-gradient(135deg, rgba(24, 24, 32, 0.85), rgba(18, 18, 24, 0.95));
-        border: 1px solid rgba(107, 33, 168, 0.35);
+    /* ===== HERO HEADER ===== */
+    .hero-header {
+        background: linear-gradient(135deg, rgba(107, 33, 168, 0.15) 0%, rgba(56, 189, 248, 0.08) 50%, rgba(16, 185, 129, 0.05) 100%);
+        border: 1px solid rgba(107, 33, 168, 0.2);
+        border-radius: 20px;
+        padding: 28px 36px;
+        margin-bottom: 24px;
+        backdrop-filter: blur(20px);
+    }
+    .hero-title {
+        font-size: 28px; font-weight: 900; color: #fff;
+        background: linear-gradient(135deg, #c084fc, #38bdf8);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        margin: 0; letter-spacing: -0.5px;
+    }
+    .hero-sub { font-size: 13px; color: #71717a; margin-top: 4px; }
+
+    /* ===== GLASS CARD ===== */
+    .glass-card {
+        background: linear-gradient(135deg, rgba(24, 24, 38, 0.7), rgba(18, 18, 28, 0.85));
+        border: 1px solid rgba(107, 33, 168, 0.2);
         border-radius: 16px;
-        padding: 24px;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6), 0 0 20px rgba(107, 33, 168, 0.15);
-        margin-bottom: 20px;
-    }
-
-    .now-playing-title {
-        font-size: 26px;
-        font-weight: 800;
-        color: #ffffff;
-        margin-bottom: 4px;
-        text-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
-    }
-
-    .now-playing-artist {
-        font-size: 16px;
-        color: #38bdf8;
-        font-weight: 500;
+        padding: 24px 28px;
+        backdrop-filter: blur(16px);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255,255,255,0.03);
         margin-bottom: 16px;
     }
 
-    /* Badge Pills */
-    .pill-badge {
-        display: inline-block;
-        padding: 4px 12px;
+    /* ===== NOW PLAYING CARD ===== */
+    .np-card {
+        background: linear-gradient(145deg, rgba(107, 33, 168, 0.12) 0%, rgba(24, 24, 38, 0.75) 40%, rgba(56, 189, 248, 0.06) 100%);
+        border: 1px solid rgba(107, 33, 168, 0.25);
         border-radius: 20px;
-        font-size: 12px;
-        font-weight: 600;
-        margin-right: 8px;
-        background: rgba(107, 33, 168, 0.2);
-        border: 1px solid rgba(107, 33, 168, 0.4);
-        color: #c084fc;
+        padding: 32px;
+        backdrop-filter: blur(20px);
+        box-shadow: 0 12px 48px rgba(107, 33, 168, 0.15), inset 0 1px 0 rgba(255,255,255,0.04);
+        margin-bottom: 20px;
+    }
+    .np-title {
+        font-size: 24px; font-weight: 800; color: #ffffff;
+        margin: 0; line-height: 1.2;
+        text-shadow: 0 2px 10px rgba(107, 33, 168, 0.3);
+    }
+    .np-artist {
+        font-size: 15px; font-weight: 500; color: #a78bfa;
+        margin: 6px 0 0 0;
+    }
+    .np-idle {
+        text-align: center; padding: 40px 20px;
+    }
+    .np-idle-icon { font-size: 52px; margin-bottom: 12px; }
+    .np-idle-text { font-size: 18px; font-weight: 600; color: #52525b; }
+    .np-idle-sub { font-size: 13px; color: #3f3f46; margin-top: 6px; }
+
+    /* ===== PILL BADGES ===== */
+    .pill {
+        display: inline-block; padding: 4px 12px; border-radius: 20px;
+        font-size: 11px; font-weight: 700; margin-right: 6px; margin-top: 12px;
+        letter-spacing: 0.3px; text-transform: uppercase;
+    }
+    .pill-violet { background: rgba(107, 33, 168, 0.2); border: 1px solid rgba(168, 85, 247, 0.3); color: #c084fc; }
+    .pill-blue { background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.25); color: #38bdf8; }
+    .pill-green { background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.25); color: #10b981; }
+    .pill-rose { background: rgba(244, 63, 94, 0.12); border: 1px solid rgba(244, 63, 94, 0.25); color: #f43f5e; }
+
+    /* ===== PROGRESS BAR ===== */
+    .progress-wrap { margin: 20px 0 8px 0; }
+    .progress-track {
+        width: 100%; height: 5px; background: rgba(255,255,255,0.08);
+        border-radius: 10px; overflow: hidden;
+    }
+    .progress-fill {
+        height: 100%; border-radius: 10px;
+        background: linear-gradient(90deg, #6b21a8, #a855f7, #38bdf8);
+        transition: width 1s linear;
+    }
+    .progress-time {
+        display: flex; justify-content: space-between; margin-top: 6px;
+        font-size: 12px; color: #52525b; font-weight: 600; font-variant-numeric: tabular-nums;
     }
 
-    .pill-badge-blue {
-        background: rgba(56, 189, 248, 0.15);
-        border: 1px solid rgba(56, 189, 248, 0.35);
-        color: #38bdf8;
-    }
-
-    .pill-badge-green {
-        background: rgba(16, 185, 129, 0.15);
-        border: 1px solid rgba(16, 185, 129, 0.35);
-        color: #10b981;
-    }
-
-    /* Streamlit Button Overrides */
+    /* ===== BUTTONS ===== */
     div.stButton > button {
-        background: #181824 !important;
-        color: #f4f4f5 !important;
-        border: 1px solid rgba(107, 33, 168, 0.4) !important;
-        border-radius: 10px !important;
-        font-weight: 600 !important;
-        transition: all 0.2s ease !important;
+        background: rgba(24, 24, 38, 0.8) !important;
+        color: #e4e4e7 !important;
+        border: 1px solid rgba(107, 33, 168, 0.25) !important;
+        border-radius: 12px !important;
+        font-weight: 700 !important;
+        font-size: 14px !important;
+        transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        backdrop-filter: blur(8px) !important;
     }
     div.stButton > button:hover {
-        background: #6b21a8 !important;
-        color: #ffffff !important;
+        background: rgba(107, 33, 168, 0.35) !important;
         border-color: #a855f7 !important;
-        box-shadow: 0 0 15px rgba(107, 33, 168, 0.6) !important;
+        color: #fff !important;
+        box-shadow: 0 0 20px rgba(107, 33, 168, 0.4) !important;
         transform: translateY(-1px) !important;
     }
-
-    /* Primary Buttons */
     div.stButton > button[kind="primary"] {
-        background: linear-gradient(135deg, #6b21a8, #4c1d95) !important;
+        background: linear-gradient(135deg, #6b21a8, #7c3aed) !important;
         border: 1px solid #a855f7 !important;
         color: #ffffff !important;
-        box-shadow: 0 4px 15px rgba(107, 33, 168, 0.4) !important;
+        box-shadow: 0 4px 20px rgba(107, 33, 168, 0.5) !important;
+    }
+    div.stButton > button[kind="primary"]:hover {
+        background: linear-gradient(135deg, #7c3aed, #8b5cf6) !important;
+        box-shadow: 0 6px 28px rgba(107, 33, 168, 0.6) !important;
     }
 
-    /* Queue Item Card */
-    .queue-row {
-        background: rgba(24, 24, 32, 0.6);
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        border-radius: 10px;
+    /* ===== QUEUE ITEMS ===== */
+    .q-item {
+        background: rgba(24, 24, 36, 0.5);
+        border: 1px solid rgba(255,255,255,0.04);
+        border-radius: 12px;
         padding: 12px 16px;
-        margin-bottom: 8px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
+        margin-bottom: 6px;
+        display: flex; align-items: center;
+        transition: background 0.2s;
+    }
+    .q-item:hover { background: rgba(107, 33, 168, 0.1); border-color: rgba(107, 33, 168, 0.2); }
+    .q-num { color: #52525b; font-weight: 700; font-size: 13px; min-width: 28px; }
+    .q-title { color: #e4e4e7; font-weight: 600; font-size: 14px; }
+    .q-meta { color: #71717a; font-size: 12px; }
+
+    /* ===== SECTION TITLES ===== */
+    .section-title {
+        font-size: 16px; font-weight: 800; color: #a1a1aa;
+        text-transform: uppercase; letter-spacing: 1.5px;
+        margin-bottom: 16px; padding-bottom: 8px;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
     }
 
-    /* Progress bar styling */
-    .stProgress > div > div > div > div {
-        background-image: linear-gradient(to right, #6b21a8, #38bdf8) !important;
+    /* ===== SEARCH BOX ===== */
+    .stTextInput > div > div > input {
+        background: rgba(24, 24, 38, 0.7) !important;
+        border: 1px solid rgba(107, 33, 168, 0.25) !important;
+        border-radius: 12px !important;
+        color: #e4e4e7 !important;
+        font-weight: 500 !important;
+        padding: 12px 16px !important;
+    }
+    .stTextInput > div > div > input:focus {
+        border-color: #a855f7 !important;
+        box-shadow: 0 0 0 2px rgba(107, 33, 168, 0.2) !important;
     }
 
-    /* Sliders */
-    div[data-baseweb="slider"] {
-        color: #38bdf8 !important;
+    /* ===== SLIDER ===== */
+    .stSlider [data-baseweb="slider"] [role="slider"] {
+        background: #a855f7 !important;
+    }
+    .stSlider [data-baseweb="slider"] > div:first-child > div {
+        background: linear-gradient(90deg, #6b21a8, #38bdf8) !important;
+    }
+
+    /* ===== STATUS INDICATOR ===== */
+    .status-dot {
+        display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+        margin-right: 8px; animation: pulse 2s infinite;
+    }
+    .status-online { background: #10b981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.5); }
+    .status-offline { background: #f43f5e; box-shadow: 0 0 8px rgba(244, 63, 94, 0.5); }
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
     }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ------------------------------------------------------------------------------
-# 2. HELPER FUNCTIONS & API CALLERS
+# 2. HELPER FUNCTIONS
 # ------------------------------------------------------------------------------
-def fetch_api(endpoint: str, method: str = "GET", json_data: dict = None):
-    """Generic API requester."""
+def api(endpoint, method="GET", data=None):
     url = f"{API_BASE_URL}{endpoint}"
     try:
         if method == "GET":
-            resp = requests.get(url, timeout=3)
+            r = requests.get(url, timeout=3)
         elif method == "POST":
-            resp = requests.post(url, json=json_data, timeout=3)
+            r = requests.post(url, json=data, timeout=3)
         elif method == "DELETE":
-            resp = requests.delete(url, timeout=3)
+            r = requests.delete(url, timeout=3)
         else:
             return None
-
-        if resp.status_code in [200, 201]:
-            return resp.json()
-        return None
-    except Exception:
+        return r.json() if r.status_code in [200, 201] else None
+    except:
         return None
 
-
-def format_ms(milliseconds: int) -> str:
-    """Format milliseconds into MM:SS."""
-    if not milliseconds or milliseconds < 0:
-        return "00:00"
-    total_sec = int(milliseconds // 1000)
-    m = (total_sec % 3600) // 60
-    s = total_sec % 60
-    return f"{m:02d}:{s:02d}"
+def fmt(ms):
+    if not ms or ms < 0: return "0:00"
+    s = int(ms // 1000)
+    m, s = divmod(s, 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
 # ------------------------------------------------------------------------------
-# 3. SIDEBAR: SERVER / GUILD SELECTION & SYSTEM HEALTH
+# 3. HEADER
 # ------------------------------------------------------------------------------
-with st.sidebar:
-    st.markdown("## 🌌 **KUSHIDA** `v2.0`")
-    st.caption("Luxury Discord Music & Web Remote Control")
+st.markdown("""
+<div class="hero-header">
+    <div style="display:flex; align-items:center; justify-content:space-between;">
+        <div>
+            <div class="hero-title">🌌 KUSHIDA</div>
+            <div class="hero-sub">Luxury Discord Music System • Web Remote Control</div>
+        </div>
+        <div style="text-align:right;">
+            <div class="hero-sub">Anyone in the voice channel can control playback</div>
+        </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
-    st.markdown("---")
 
-    # Fetch bot status
-    status_data = fetch_api("/api/status")
-    if status_data and status_data.get("status") == "online":
-        st.markdown(f"🟢 **System Online** • `{status_data.get('latency_ms', 0)}ms`")
-        st.caption(f"Active Players: **{status_data.get('active_players', 0)}** • Bot: `{status_data.get('user', '')}`")
+# ------------------------------------------------------------------------------
+# 4. STATUS BAR & GUILD SELECTION
+# ------------------------------------------------------------------------------
+status = api("/api/status")
+guilds = api("/api/guilds") or []
+
+col_status, col_guild = st.columns([2, 1])
+
+with col_status:
+    if status and status.get("status") == "online":
+        st.markdown(
+            f'<span class="status-dot status-online"></span>'
+            f'<span style="color:#10b981;font-weight:700;">SYSTEM ONLINE</span>'
+            f'<span style="color:#52525b;"> • {status.get("latency_ms", 0)}ms • {status.get("user", "")}</span>',
+            unsafe_allow_html=True
+        )
     else:
-        st.error("🔴 **API Disconnected** • Check if `main.py` is running.")
+        st.markdown(
+            '<span class="status-dot status-offline"></span>'
+            '<span style="color:#f43f5e;font-weight:700;">API DISCONNECTED</span>'
+            '<span style="color:#52525b;"> • Start main.py to connect</span>',
+            unsafe_allow_html=True
+        )
 
-    st.markdown("---")
-    st.subheader("Discord Servers")
-
-    guilds = fetch_api("/api/guilds") or []
-    if not guilds:
-        st.info("No servers found. Invite Kushida to a server!")
-        selected_guild_id = None
+with col_guild:
+    if guilds:
+        guild_map = {f"🎵 {g['name']}": g["id"] for g in guilds}
+        sel = st.selectbox("Server", list(guild_map.keys()), label_visibility="collapsed")
+        guild_id = guild_map[sel]
     else:
-        guild_options = {g["name"]: g["id"] for g in guilds}
-        selected_guild_name = st.selectbox("Select Active Server", list(guild_options.keys()))
-        selected_guild_id = guild_options[selected_guild_name]
+        st.info("No Discord servers found")
+        guild_id = None
 
-    st.markdown("---")
-    st.subheader("✨ AI Mood Shortcuts")
-    st.caption("Push curated vibe queues to VC")
-
-    mood_col1, mood_col2 = st.columns(2)
-    with mood_col1:
-        if st.button("🌊 Lo-Fi Chill", use_container_width=True):
-            if selected_guild_id:
-                fetch_api(f"/api/control/{selected_guild_id}/play", "POST", {"query": "Lo-Fi Beats to Relax"})
-                st.toast("Queued Lo-Fi Chill!")
-        if st.button("⚡ Phonk Hype", use_container_width=True):
-            if selected_guild_id:
-                fetch_api(f"/api/control/{selected_guild_id}/play", "POST", {"query": "Phonk Drift Best"})
-                st.toast("Queued Phonk Drift!")
-    with mood_col2:
-        if st.button("🌃 Late Night", use_container_width=True):
-            if selected_guild_id:
-                fetch_api(f"/api/control/{selected_guild_id}/play", "POST", {"query": "Late Night Synthwave"})
-                st.toast("Queued Late Night Synth!")
-        if st.button("💪 Gym Beast", use_container_width=True):
-            if selected_guild_id:
-                fetch_api(f"/api/control/{selected_guild_id}/play", "POST", {"query": "Workout Hype Motivation"})
-                st.toast("Queued Gym Beats!")
-
-    # Auto refresh toggle
-    st.markdown("---")
-    auto_refresh = st.checkbox("🔄 Live Polling (Every 3s)", value=True)
-    if auto_refresh:
-        time.sleep(3)
-        st.rerun()
-
-
-# ------------------------------------------------------------------------------
-# 4. MAIN PANEL: NOW PLAYING & PLAYBACK CONTROLS
-# ------------------------------------------------------------------------------
-st.title("🎛️ **Audio Control Center**")
-
-if not selected_guild_id:
-    st.warning("Please select a Discord server from the sidebar.")
+if not guild_id:
     st.stop()
 
-# Fetch Guild Player State
-player_status = fetch_api(f"/api/status/{selected_guild_id}")
 
-col_left, col_right = st.columns([1.4, 1.0])
+# Fetch player state
+ps = api(f"/api/status/{guild_id}")
 
-with col_left:
-    st.markdown("<div class='luxury-card'>", unsafe_allow_html=True)
+# Layout: Main Player | Side Panel
+main_col, side_col = st.columns([1.6, 1], gap="large")
 
-    if player_status and player_status.get("current_track"):
-        track = player_status["current_track"]
-        pos_ms = player_status.get("position_ms", 0)
-        dur_ms = track.get("duration_ms", 1)
-        progress_val = min(max(pos_ms / dur_ms if dur_ms > 0 else 0.0, 0.0), 1.0)
 
-        # Header Row: Artwork + Details
-        art_col, info_col = st.columns([1, 2])
+# ------------------------------------------------------------------------------
+# 5. NOW PLAYING CARD (CENTER STAGE)
+# ------------------------------------------------------------------------------
+with main_col:
+    if ps and ps.get("current_track"):
+        track = ps["current_track"]
+        pos = ps.get("position_ms", 0)
+        dur = track.get("duration_ms", 1)
+        pct = min(max(pos / dur if dur > 0 else 0, 0), 1.0)
+
+        st.markdown('<div class="np-card">', unsafe_allow_html=True)
+
+        # Album Art + Track Info
+        art_col, info_col = st.columns([1, 2.5])
         with art_col:
-            art_url = track.get("artwork_url") or "https://placehold.co/400x400/0d0d12/6b21a8?text=Kushida"
-            st.image(art_url, use_container_width=True)
+            art = track.get("artwork_url") or "https://placehold.co/300x300/18181b/6b21a8?text=🌌"
+            st.image(art, use_container_width=True)
 
         with info_col:
-            st.markdown(f"<div class='now-playing-title'>{track['title']}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='now-playing-artist'>by {track['author']}</div>", unsafe_allow_html=True)
+            st.markdown(f'<div class="np-title">{track["title"]}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="np-artist">{track["author"]}</div>', unsafe_allow_html=True)
 
-            # Badges
-            vol_val = player_status.get("volume", 100)
-            loop_val = player_status.get("loop_mode", "off")
-            st.markdown(
-                f"<span class='pill-badge'>🔊 {vol_val}%</span>"
-                f"<span class='pill-badge pill-badge-blue'>🔁 {loop_val.upper()}</span>"
-                f"<span class='pill-badge pill-badge-green'>⚡ Lavalink v4 HQ</span>",
-                unsafe_allow_html=True
+            # Status Pills
+            vol = ps.get("volume", 100)
+            loop = ps.get("loop_mode", "normal")
+            loop_label = {"normal": "OFF", "track": "TRACK", "queue": "QUEUE"}.get(loop, "OFF")
+            paused = ps.get("paused", False)
+
+            pills_html = (
+                f'<span class="pill pill-violet">🔊 {vol}%</span>'
+                f'<span class="pill pill-blue">🔁 {loop_label}</span>'
+                f'<span class="pill pill-green">📑 {ps.get("queue_count", 0)} QUEUED</span>'
             )
+            if paused:
+                pills_html += '<span class="pill pill-rose">⏸ PAUSED</span>'
+            st.markdown(pills_html, unsafe_allow_html=True)
 
-        # Progress Bar & Time Stamps
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.progress(progress_val)
-        time_left_col, time_right_col = st.columns(2)
-        with time_left_col:
-            st.caption(f"⏱️ `{format_ms(pos_ms)}`")
-        with time_right_col:
-            st.caption(f"<div style='text-align: right;'>`{format_ms(dur_ms)}` ⏳</div>", unsafe_allow_html=True)
+        # Progress Bar
+        st.markdown(f"""
+        <div class="progress-wrap">
+            <div class="progress-track"><div class="progress-fill" style="width:{pct*100:.1f}%"></div></div>
+            <div class="progress-time"><span>{fmt(pos)}</span><span>{fmt(dur)}</span></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown('</div>', unsafe_allow_html=True)
 
     else:
-        st.markdown("<div class='now-playing-title'>No Track Active</div>", unsafe_allow_html=True)
-        st.caption("Voice channel is idle. Search a song below to begin streaming.")
-        st.progress(0.0)
-
-    st.markdown("</div>", unsafe_allow_html=True)
+        # Idle State
+        st.markdown("""
+        <div class="np-card">
+            <div class="np-idle">
+                <div class="np-idle-icon">🌌</div>
+                <div class="np-idle-text">No track is playing</div>
+                <div class="np-idle-sub">Search a song below or use /play on Discord to start streaming</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     # --------------------------------------------------------------------------
-    # PLAYBACK CONTROL BUTTONS
+    # PLAYBACK CONTROLS
     # --------------------------------------------------------------------------
-    btn_c1, btn_c2, btn_c3, btn_c4, btn_c5, btn_c6 = st.columns(6)
+    st.markdown('<div class="section-title">🎛️ Playback Controls</div>', unsafe_allow_html=True)
 
-    with btn_c1:
-        if st.button("⏮️ Prev", use_container_width=True):
-            fetch_api(f"/api/control/{selected_guild_id}/previous", "POST")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1:
+        if st.button("⏮ Prev", use_container_width=True):
+            api(f"/api/control/{guild_id}/previous", "POST")
             st.rerun()
-
-    with btn_c2:
-        is_paused = player_status.get("paused", False) if player_status else False
-        play_label = "▶️ Resume" if is_paused else "⏸️ Pause"
-        if st.button(play_label, type="primary", use_container_width=True):
-            fetch_api(f"/api/control/{selected_guild_id}/pause", "POST")
+    with c2:
+        label = "▶️ Play" if (ps and ps.get("paused")) else "⏸ Pause"
+        if st.button(label, type="primary", use_container_width=True):
+            api(f"/api/control/{guild_id}/pause", "POST")
             st.rerun()
-
-    with btn_c3:
-        if st.button("⏭️ Next", use_container_width=True):
-            fetch_api(f"/api/control/{selected_guild_id}/skip", "POST")
+    with c3:
+        if st.button("⏭ Next", use_container_width=True):
+            api(f"/api/control/{guild_id}/skip", "POST")
             st.rerun()
-
-    with btn_c4:
+    with c4:
         if st.button("🔀 Shuffle", use_container_width=True):
-            fetch_api(f"/api/control/{selected_guild_id}/shuffle", "POST")
-            st.toast("Queue shuffled!")
+            api(f"/api/control/{guild_id}/shuffle", "POST")
             st.rerun()
-
-    with btn_c5:
-        if st.button("⏹️ Stop", use_container_width=True):
-            fetch_api(f"/api/control/{selected_guild_id}/stop", "POST")
+    with c5:
+        if st.button("⏹ Stop", use_container_width=True):
+            api(f"/api/control/{guild_id}/stop", "POST")
             st.rerun()
-
-    with btn_c6:
+    with c6:
         if st.button("🔄 Sync", use_container_width=True):
             st.rerun()
 
-    # Volume & Filters
-    st.markdown("<br>", unsafe_allow_html=True)
-    vol_slider = st.slider(
-        "Master Volume",
-        min_value=0,
-        max_value=200,
-        value=player_status.get("volume", 100) if player_status else 100,
-        step=5
-    )
-    if vol_slider != (player_status.get("volume", 100) if player_status else 100):
-        fetch_api(f"/api/control/{selected_guild_id}/volume", "POST", {"volume": vol_slider})
+    # Volume Slider
+    vol_val = ps.get("volume", 100) if ps else 100
+    new_vol = st.slider("🔊 Master Volume", 0, 200, vol_val, 5, label_visibility="visible")
+    if new_vol != vol_val:
+        api(f"/api/control/{guild_id}/volume", "POST", {"volume": new_vol})
 
-    # Studio Audio Filters
-    st.subheader("🎛️ Studio Filter Presets")
-    f_c1, f_c2, f_c3, f_c4, f_c5 = st.columns(5)
-    with f_c1:
-        if st.button("🔊 Bassboost", use_container_width=True):
-            fetch_api(f"/api/control/{selected_guild_id}/filter", "POST", {"preset": "bassboost"})
-            st.toast("Applied Bassboost!")
-    with f_c2:
-        if st.button("⚡ Nightcore", use_container_width=True):
-            fetch_api(f"/api/control/{selected_guild_id}/filter", "POST", {"preset": "nightcore"})
-            st.toast("Applied Nightcore!")
-    with f_c3:
-        if st.button("🎧 8D Spatial", use_container_width=True):
-            fetch_api(f"/api/control/{selected_guild_id}/filter", "POST", {"preset": "8d"})
-            st.toast("Applied 8D Spatial Audio!")
-    with f_c4:
-        if st.button("🌊 Vaporwave", use_container_width=True):
-            fetch_api(f"/api/control/{selected_guild_id}/filter", "POST", {"preset": "vaporwave"})
-            st.toast("Applied Vaporwave!")
-    with f_c5:
-        if st.button("✨ Reset Filters", use_container_width=True):
-            fetch_api(f"/api/control/{selected_guild_id}/filter", "POST", {"preset": "reset"})
-            st.toast("Audio Filters Reset to HQ Studio!")
+    # --------------------------------------------------------------------------
+    # STUDIO AUDIO FILTERS
+    # --------------------------------------------------------------------------
+    st.markdown('<div class="section-title">🎧 Studio Filter Presets</div>', unsafe_allow_html=True)
+
+    fc1, fc2, fc3, fc4, fc5 = st.columns(5)
+    filter_map = {
+        "🔊 Bass+": "bassboost",
+        "⚡ Nightcore": "nightcore",
+        "🎧 8D Spatial": "8d",
+        "🌊 Vaporwave": "vaporwave",
+        "✨ Reset": "reset"
+    }
+    for col, (label, preset) in zip([fc1, fc2, fc3, fc4, fc5], filter_map.items()):
+        with col:
+            if st.button(label, use_container_width=True, key=f"f_{preset}"):
+                api(f"/api/control/{guild_id}/filter", "POST", {"preset": preset})
+                st.toast(f"Applied {label}!")
 
 
 # ------------------------------------------------------------------------------
-# 5. RIGHT COLUMN: REMOTE SEARCH & QUEUE MANAGER
+# 6. SIDE PANEL — SEARCH + QUEUE
 # ------------------------------------------------------------------------------
-with col_right:
-    # Remote Song Search & Pusher
-    st.markdown("<div class='luxury-card'>", unsafe_allow_html=True)
-    st.subheader("🔍 Push Music to VC")
-    search_query = st.text_input("Enter Track Name, Artist, or YouTube URL", placeholder="e.g. Starboy - The Weeknd")
+with side_col:
+    # Search & Push
+    st.markdown('<div class="section-title">🔍 Stream to Voice Channel</div>', unsafe_allow_html=True)
+    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
 
-    if st.button("🚀 Stream to Discord VC", type="primary", use_container_width=True):
-        if search_query.strip():
-            res = fetch_api(f"/api/control/{selected_guild_id}/play", "POST", {"query": search_query.strip()})
+    query = st.text_input("Search", placeholder="Song name, artist, or YouTube URL...", label_visibility="collapsed")
+    if st.button("🚀 Push to Discord VC", type="primary", use_container_width=True):
+        if query.strip():
+            res = api(f"/api/control/{guild_id}/play", "POST", {"query": query.strip()})
             if res and res.get("success"):
-                st.success(res.get("message", "Queued successfully!"))
+                st.success(res.get("message", "Queued!"))
+                time.sleep(1)
                 st.rerun()
             else:
-                st.error("Failed to queue song. Ensure bot is connected to a voice channel.")
+                st.error("Failed to queue. Is bot connected to a VC?")
         else:
-            st.warning("Please enter a song name or URL.")
-    st.markdown("</div>", unsafe_allow_html=True)
+            st.warning("Enter a song name or URL")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # Quick Vibe Buttons
+    st.markdown('<div class="section-title">🌌 Quick Vibes</div>', unsafe_allow_html=True)
+
+    vibes = [
+        ("🌊 Lo-Fi Chill", "lo-fi beats chill study"),
+        ("⚡ Phonk Drift", "phonk drift music playlist"),
+        ("🌃 Late Night Synth", "synthwave retrowave night drive"),
+        ("💪 Gym Hype", "workout motivation hype music"),
+        ("🎮 Gaming Mode", "gaming music epic orchestral"),
+        ("☕ Coffee Jazz", "jazz cafe acoustic warm"),
+    ]
+    vc1, vc2 = st.columns(2)
+    for i, (lbl, q) in enumerate(vibes):
+        with vc1 if i % 2 == 0 else vc2:
+            if st.button(lbl, use_container_width=True, key=f"vibe_{i}"):
+                api(f"/api/control/{guild_id}/play", "POST", {"query": q})
+                st.toast(f"Queued {lbl}!")
+                st.rerun()
 
     # Queue Manager
-    st.subheader("📑 Upcoming Queue")
-    queue_data = fetch_api(f"/api/queue/{selected_guild_id}")
+    st.markdown('<div class="section-title">📑 Up Next</div>', unsafe_allow_html=True)
 
+    queue_data = api(f"/api/queue/{guild_id}")
     if queue_data and queue_data.get("tracks"):
         tracks = queue_data["tracks"]
-        st.caption(f"**{len(tracks)} tracks** waiting in line")
-
-        for t in tracks[:10]:
+        for t in tracks[:8]:
             idx = t["index"]
-            title_short = t["title"][:30] + "..." if len(t["title"]) > 30 else t["title"]
-            dur = format_ms(t.get("duration_ms", 0))
+            title = t["title"][:32] + "..." if len(t["title"]) > 32 else t["title"]
+            dur = fmt(t.get("duration_ms", 0))
 
-            q_col1, q_col2, q_col3, q_col4 = st.columns([0.6, 3, 0.6, 0.6])
-            with q_col1:
-                st.write(f"`{idx + 1:02d}`")
-            with q_col2:
-                st.write(f"**{title_short}**\n`{t['author']}` • `{dur}`")
-            with q_col3:
-                # Move Up
-                if idx > 0:
-                    if st.button("▲", key=f"up_{idx}", use_container_width=True):
-                        fetch_api(f"/api/control/{selected_guild_id}/reorder", "POST", {"from_index": idx, "to_index": idx - 1})
-                        st.rerun()
-            with q_col4:
-                # Remove
-                if st.button("✕", key=f"del_{idx}", use_container_width=True):
-                    fetch_api(f"/api/control/{selected_guild_id}/queue/{idx}", "DELETE")
+            st.markdown(f"""
+            <div class="q-item">
+                <span class="q-num">{idx + 1:02d}</span>
+                <div style="flex:1; margin-left:12px;">
+                    <div class="q-title">{title}</div>
+                    <div class="q-meta">{t['author']} • {dur}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            qc1, qc2 = st.columns(2)
+            with qc1:
+                if idx > 0 and st.button("▲ Move Up", key=f"up_{idx}", use_container_width=True):
+                    api(f"/api/control/{guild_id}/reorder", "POST", {"from_index": idx, "to_index": idx - 1})
                     st.rerun()
-            st.markdown("---")
+            with qc2:
+                if st.button("✕ Remove", key=f"del_{idx}", use_container_width=True):
+                    api(f"/api/control/{guild_id}/queue/{idx}", "DELETE")
+                    st.rerun()
     else:
-        st.info("Queue is empty. Use the search bar above to queue songs.")
+        st.markdown("""
+        <div style="text-align:center; padding:24px; color:#3f3f46;">
+            <div style="font-size:28px; margin-bottom:8px;">📑</div>
+            <div style="font-size:13px; font-weight:600;">Queue is empty</div>
+            <div style="font-size:12px; color:#27272a;">Search above or use /play on Discord</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+# Auto-refresh toggle (bottom)
+st.markdown("---")
+col_ref, col_info = st.columns([1, 2])
+with col_ref:
+    if st.checkbox("🔄 Live Sync (3s)", value=True):
+        time.sleep(3)
+        st.rerun()
+with col_info:
+    st.caption("Anyone in the Discord voice channel can use this web remote • Powered by Kushida v2.0")
