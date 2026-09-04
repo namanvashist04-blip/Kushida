@@ -1,47 +1,46 @@
 """
 ================================================================================
-  KUSHIDA — LUXURY DISCORD MUSIC ARCHITECTURE
-  MODULE: api/server.py (FastAPI Backend, WebSockets & Spotify OAuth)
+  DEMON MUSIC — LUXURY DISCORD MUSIC ARCHITECTURE
+  MODULE: api/server.py (FastAPI Backend, WebSockets & Demon Terminal UI)
 ================================================================================
 """
 
 import asyncio
 import logging
 import time
-import spotipy
-from spotipy.oauth2 import SpotifyOAuth
+import os
+from pathlib import Path
 from typing import Optional, Dict, Any, List
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, Field
 
 import discord
 import wavelink
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Header, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from config import (
     API_HOST,
     API_PORT,
-    SPOTIFY_CLIENT_ID,
-    SPOTIFY_CLIENT_SECRET,
-    SPOTIFY_REDIRECT_URI,
-    SPOTIFY_SCOPE,
-    HEX_DEEP_SPACE,
-    HEX_VIOLET,
-    HEX_ICE_BLUE,
+    TOPGG_AUTH,
+    HEX_DEMON_BG,
+    HEX_DEMON_PURPLE,
+    HEX_DEMON_RED,
 )
 from database import db_manager
 
-logger = logging.getLogger("kushida.api")
+logger = logging.getLogger("demon.api")
+BASE_DIR = Path(__file__).resolve().parent.parent
+WEB_DIR = BASE_DIR / "web"
 
-# FastAPI App Instance
 app = FastAPI(
-    title="Kushida Luxury Music API",
-    description="High-performance REST API and WebSocket gateway for Discord Bot Remote Control.",
-    version="2.0.0"
+    title="Demon Music Terminal API",
+    description="High-performance REST API and WebSocket gateway for Demon Music Bot remote control.",
+    version="3.0.0"
 )
 
-# CORS Configuration (Permissive for Local Web Remote & Dashboard)
+# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -50,601 +49,248 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global bot reference injected by main.py
+# Mount Static Files from web/
+if WEB_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
+
+# Bot Instance reference
 bot_instance: Optional[discord.Bot] = None
-# Global filter tracker: guild_id -> active filter preset name
-active_filters: Dict[int, str] = {}
 
 
 def set_bot_instance(bot: discord.Bot) -> None:
-    """Inject the running Discord bot instance into the API context."""
     global bot_instance
     bot_instance = bot
 
 
-# ------------------------------------------------------------------------------
-# PYDANTIC REQUEST & RESPONSE SCHEMAS
-# ------------------------------------------------------------------------------
-class PlayRequest(BaseModel):
-    query: str = Field(..., description="Song name, YouTube URL, or Spotify link")
-    voice_channel_id: Optional[int] = Field(None, description="Target Voice Channel ID (optional if bot already in VC)")
-
-class VolumeRequest(BaseModel):
-    volume: int = Field(..., ge=0, le=200, description="Volume percentage 0 - 200")
-
-class SeekRequest(BaseModel):
-    position_ms: int = Field(..., ge=0, description="Seek target in milliseconds")
-
-class FilterRequest(BaseModel):
-    preset: str = Field(..., description="Filter name: bassboost, nightcore, 8d, vaporwave, reset")
-
-class ReorderRequest(BaseModel):
-    from_index: int = Field(..., ge=0)
-    to_index: int = Field(..., ge=0)
-
-
-# ------------------------------------------------------------------------------
-# HELPER FUNCTIONS
-# ------------------------------------------------------------------------------
-def _extract_artwork(track) -> Optional[str]:
-    """Safely extracts track artwork with YouTube thumbnail fallback."""
-    if not track:
+def _get_active_player() -> Optional[wavelink.Player]:
+    if not bot_instance:
         return None
-    art = getattr(track, "artwork_url", None)
-    if art and isinstance(art, str) and art.startswith("http"):
-        return art
-    uri = getattr(track, "uri", None)
-    if uri and isinstance(uri, str):
-        import re
-        m = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", uri)
-        if m:
-            return f"https://img.youtube.com/vi/{m.group(1)}/hqdefault.jpg"
+    for g in bot_instance.guilds:
+        p = getattr(g, "voice_client", None)
+        if p and isinstance(p, wavelink.Player) and p.connected:
+            return p
     return None
 
 
-def _get_player_or_404(guild_id: int) -> wavelink.Player:
-    """Retrieve player for a given guild ID or raise 404."""
-    if not bot_instance:
-        raise HTTPException(status_code=503, detail="Discord bot is still initializing.")
-
-    guild = bot_instance.get_guild(guild_id)
-    if not guild:
-        raise HTTPException(status_code=404, detail=f"Guild {guild_id} not found.")
-
-    player = getattr(guild, "voice_client", None)
-    if not player or not isinstance(player, wavelink.Player):
-        raise HTTPException(status_code=404, detail=f"No active music player in guild {guild_id}.")
-
-    return player
+# ------------------------------------------------------------------------------
+# 1. FRONTEND TERMINAL DASHBOARD
+# ------------------------------------------------------------------------------
+@app.get("/", response_class=FileResponse)
+async def serve_dashboard():
+    index_path = WEB_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
+    return HTMLResponse("<h1>Demon Music Terminal is loading...</h1>")
 
 
-async def dispatch_to_bot(coro_fn, *args, **kwargs):
-    """Executes a coroutine thread-safely inside the Discord Bot's event loop."""
-    if not bot_instance or not bot_instance.loop or not bot_instance.loop.is_running():
-        raise HTTPException(status_code=503, detail="Discord bot loop is not running.")
+# ------------------------------------------------------------------------------
+# 2. TOP.GG VOTE WEBHOOK
+# ------------------------------------------------------------------------------
+@app.post("/vote")
+@app.post("/api/vote")
+async def handle_topgg_vote(request: Request, authorization: Optional[str] = Header(None)):
+    """Receives and records Top.gg voting webhooks."""
+    if TOPGG_AUTH and authorization != TOPGG_AUTH:
+        raise HTTPException(status_code=401, detail="Unauthorized vote webhook.")
 
-    coro = coro_fn(*args, **kwargs)
-    future = asyncio.run_coroutine_threadsafe(coro, bot_instance.loop)
     try:
-        # Wrap future inside asyncio.wrap_future so FastAPI can await it cleanly
-        return await asyncio.wrap_future(future)
+        payload = await request.json()
+        user_id_str = payload.get("user")
+        if user_id_str:
+            user_id = int(user_id_str)
+            await db_manager.record_vote(user_id)
+            logger.info(f"Top.gg vote recorded for user: {user_id}")
+            return {"status": "success", "user": user_id}
     except Exception as e:
-        logger.error(f"Error executing dispatched bot action: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error processing vote webhook: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "ignored"}
 
 
 # ------------------------------------------------------------------------------
-# 1. BOT & GUILD STATUS ROUTES
+# 3. PLAYBACK CONTROL SCHEMAS & ROUTES
 # ------------------------------------------------------------------------------
-@app.get("/api/status")
-async def get_general_status():
-    """Returns general bot health, latency, uptime, and guild counts."""
-    if not bot_instance:
-        return {"status": "starting", "bot_ready": False}
+class PlayPayload(BaseModel):
+    query: str
+    guild_id: Optional[int] = None
 
-    active_players = sum(
-        1 for g in bot_instance.guilds
-        if g.voice_client and isinstance(g.voice_client, wavelink.Player) and g.voice_client.playing
-    )
+class VolumePayload(BaseModel):
+    volume: int
+    guild_id: Optional[int] = None
 
-    import math
-    latency_val = 0.0
-    if bot_instance.latency and not math.isnan(bot_instance.latency) and not math.isinf(bot_instance.latency):
-        latency_val = round(bot_instance.latency * 1000, 2)
+class PausePayload(BaseModel):
+    paused: bool
+    guild_id: Optional[int] = None
 
-    return {
-        "status": "online",
-        "bot_ready": bot_instance.is_ready(),
-        "latency_ms": latency_val,
-        "guild_count": len(bot_instance.guilds),
-        "active_players": active_players,
-        "user": str(bot_instance.user) if bot_instance.user else "Kushida#0000"
-    }
+class SeekPayload(BaseModel):
+    position_ms: int
+    guild_id: Optional[int] = None
 
 
-@app.get("/api/guilds")
-async def list_bot_guilds():
-    """List all Discord servers the bot is in, along with their active VC status."""
-    if not bot_instance:
-        return []
+@app.post("/api/play")
+async def api_play(payload: PlayPayload):
+    player = _get_active_player()
+    if not player or not bot_instance:
+        raise HTTPException(status_code=404, detail="No active voice channel connection found.")
 
-    result = []
-    for g in bot_instance.guilds:
-        player = g.voice_client
-        active = False
-        curr_track = None
-        if player and isinstance(player, wavelink.Player) and player.connected:
-            active = True
-            if player.current:
-                curr_track = player.current.title
+    async def _action():
+        tracks = await wavelink.Playable.search(payload.query)
+        if not tracks:
+            return {"success": False, "message": "No tracks found"}
+        t = tracks[0] if not isinstance(tracks, wavelink.Playlist) else tracks.tracks[0]
+        t.requester_name = "Web Terminal"
+        if not player.playing:
+            await player.play(t)
+        else:
+            await player.queue.put_wait(t)
+        return {"success": True, "title": t.title}
 
-        result.append({
-            "id": g.id,
-            "name": g.name,
-            "icon_url": g.icon.url if g.icon else None,
-            "member_count": g.member_count,
-            "has_active_player": active,
-            "current_track": curr_track
-        })
-    return result
+    fut = asyncio.run_coroutine_threadsafe(_action(), bot_instance.loop)
+    return await asyncio.wrap_future(fut)
 
 
-@app.get("/api/status/{guild_id}")
-async def get_guild_player_status(guild_id: int):
-    """Returns real-time player telemetry for a specific guild."""
-    player = _get_player_or_404(guild_id)
+@app.post("/api/pause")
+async def api_pause(payload: PausePayload):
+    player = _get_active_player()
+    if not player or not bot_instance:
+        return {"success": False}
 
-    track_data = None
-    if player.current and (player.playing or player.paused):
-        c = player.current
-        track_data = {
-            "title": c.title,
-            "author": getattr(c, "author", "Unknown"),
-            "duration_ms": getattr(c, "length", 0),
-            "position_ms": player.position,
-            "artwork_url": _extract_artwork(c),
-            "uri": getattr(c, "uri", None),
-        }
+    async def _action():
+        await player.pause(payload.paused)
+        return {"success": True, "paused": player.paused}
 
-    loop_label = "normal"
-    q_mode = getattr(player.queue, "mode", wavelink.QueueMode.normal)
-    if q_mode == wavelink.QueueMode.loop:
-        loop_label = "track"
-    elif q_mode == wavelink.QueueMode.loop_all:
-        loop_label = "queue"
-
-    curr_filter = active_filters.get(guild_id, "reset")
-
-    return {
-        "guild_id": guild_id,
-        "connected": player.connected,
-        "playing": player.playing,
-        "paused": player.paused,
-        "volume": player.volume,
-        "position_ms": player.position,
-        "loop_mode": loop_label,
-        "active_filter": curr_filter,
-        "queue_count": len(player.queue),
-        "current_track": track_data
-    }
+    fut = asyncio.run_coroutine_threadsafe(_action(), bot_instance.loop)
+    return await asyncio.wrap_future(fut)
 
 
-@app.get("/api/queue/{guild_id}")
-async def get_guild_queue(guild_id: int):
-    """Retrieve full queued tracks for a guild."""
-    player = _get_player_or_404(guild_id)
+@app.post("/api/skip")
+async def api_skip():
+    player = _get_active_player()
+    if not player or not bot_instance:
+        return {"success": False}
 
-    tracks = []
-    for i, t in enumerate(list(player.queue)):
-        tracks.append({
-            "index": i,
-            "title": t.title,
-            "author": getattr(t, "author", "Unknown"),
-            "duration_ms": getattr(t, "length", 0),
-            "artwork_url": getattr(t, "artwork_url", None),
-            "uri": getattr(t, "uri", None),
-        })
+    async def _action():
+        await player.skip(force=True)
+        return {"success": True}
 
-    return {
-        "guild_id": guild_id,
-        "total_tracks": len(tracks),
-        "tracks": tracks
-    }
+    fut = asyncio.run_coroutine_threadsafe(_action(), bot_instance.loop)
+    return await asyncio.wrap_future(fut)
 
 
-# ------------------------------------------------------------------------------
-# 2. REMOTE PLAYBACK CONTROL ROUTES (Threadsafe Dispatches)
-# ------------------------------------------------------------------------------
-async def _do_play(guild_id: int, query: str, voice_channel_id: Optional[int]):
-    guild = bot_instance.get_guild(guild_id)
-    if not guild:
-        raise HTTPException(status_code=404, detail="Guild not found")
+@app.post("/api/volume")
+async def api_volume(payload: VolumePayload):
+    player = _get_active_player()
+    if not player or not bot_instance:
+        return {"success": False}
 
-    player: Optional[wavelink.Player] = getattr(guild, "voice_client", None)
-    if not player or not player.connected:
-        vc = None
-        if voice_channel_id:
-            vc = guild.get_channel(voice_channel_id)
-        if not vc:
-            for c in guild.voice_channels:
-                if len(c.members) > 0:
-                    vc = c
-                    break
-        if not vc and guild.voice_channels:
-            vc = guild.voice_channels[0]
-        if not vc:
-            raise HTTPException(status_code=400, detail="No voice channel available")
-        player = await vc.connect(cls=wavelink.Player)
+    async def _action():
+        await player.set_volume(payload.volume)
+        return {"success": True, "volume": player.volume}
 
-    search_results = await wavelink.Playable.search(query)
-    if not search_results:
-        raise HTTPException(status_code=404, detail="No tracks found for query.")
-
-    if isinstance(search_results, wavelink.Playlist):
-        added = await player.queue.put_wait(search_results)
-        msg = f"Added playlist '{search_results.name}' ({added} tracks) to queue."
-    else:
-        track = search_results[0]
-        await player.queue.put_wait(track)
-        msg = f"Added '{track.title}' to queue."
-
-    # Ensure player has an active text channel assigned for discord panel rendering
-    if not getattr(player, "text_channel", None):
-        candidates = [tc for tc in guild.text_channels if tc.permissions_for(guild.me).send_messages]
-        for c in candidates:
-            if any(k in c.name.lower() for k in ["music", "bot", "sound", "song", "command", "general"]):
-                player.text_channel = c
-                break
-        if not player.text_channel and candidates:
-            player.text_channel = candidates[0]
-
-    if not player.playing:
-        if player.paused:
-            await player.pause(False)
-        if not player.queue.is_empty:
-            next_track = player.queue.get()
-            await player.play(next_track)
-
-    return {"success": True, "message": msg}
+    fut = asyncio.run_coroutine_threadsafe(_action(), bot_instance.loop)
+    return await asyncio.wrap_future(fut)
 
 
-@app.post("/api/control/{guild_id}/play")
-async def remote_play(guild_id: int, payload: PlayRequest):
-    """Queue and play a track remotely from the Web Dashboard."""
-    return await dispatch_to_bot(_do_play, guild_id, payload.query, payload.voice_channel_id)
+@app.post("/api/seek")
+async def api_seek(payload: SeekPayload):
+    player = _get_active_player()
+    if not player or not bot_instance:
+        return {"success": False}
+
+    async def _action():
+        await player.seek(payload.position_ms)
+        return {"success": True, "position": payload.position_ms}
+
+    fut = asyncio.run_coroutine_threadsafe(_action(), bot_instance.loop)
+    return await asyncio.wrap_future(fut)
 
 
-async def _do_pause(guild_id: int):
-    player = _get_player_or_404(guild_id)
-    new_state = not player.paused
-    await player.pause(new_state)
-    return {"success": True, "paused": new_state}
-
-
-@app.post("/api/control/{guild_id}/pause")
-async def remote_pause_toggle(guild_id: int):
-    """Toggle pause state thread-safely."""
-    return await dispatch_to_bot(_do_pause, guild_id)
-
-
-async def _do_skip(guild_id: int):
-    player = _get_player_or_404(guild_id)
-    await player.skip()
-    return {"success": True, "message": "Skipped track."}
-
-
-@app.post("/api/control/{guild_id}/skip")
-async def remote_skip(guild_id: int):
-    """Skip to next track thread-safely."""
-    return await dispatch_to_bot(_do_skip, guild_id)
-
-
-async def _do_previous(guild_id: int):
-    audio_cog = bot_instance.get_cog("Audio")
-    if not audio_cog:
-        raise HTTPException(status_code=500, detail="Audio engine unavailable")
-    success = await audio_cog.play_previous_track(guild_id)
-    if not success:
-        raise HTTPException(status_code=400, detail="No previous track found in history")
-    return {"success": True, "message": "Replaying previous track."}
-
-
-@app.post("/api/control/{guild_id}/previous")
-async def remote_previous(guild_id: int):
-    """Play previous track from history thread-safely."""
-    return await dispatch_to_bot(_do_previous, guild_id)
-
-
-async def _do_volume(guild_id: int, volume: int):
-    player = _get_player_or_404(guild_id)
-    await player.set_volume(volume)
-    return {"success": True, "volume": volume}
-
-
-@app.post("/api/control/{guild_id}/volume")
-async def remote_set_volume(guild_id: int, payload: VolumeRequest):
-    """Set volume level (0-200%)."""
-    return await dispatch_to_bot(_do_volume, guild_id, payload.volume)
-
-
-async def _do_seek(guild_id: int, position_ms: int):
-    player = _get_player_or_404(guild_id)
-    if not player.current:
-        raise HTTPException(status_code=400, detail="No track playing to seek.")
-    await player.seek(position_ms)
-    return {"success": True, "position_ms": position_ms}
-
-
-@app.post("/api/control/{guild_id}/seek")
-async def remote_seek(guild_id: int, payload: SeekRequest):
-    """Seek to specific millisecond timestamp."""
-    return await dispatch_to_bot(_do_seek, guild_id, payload.position_ms)
-
-
-async def _do_stop(guild_id: int):
-    player = _get_player_or_404(guild_id)
+@app.post("/api/clearqueue")
+async def api_clearqueue():
+    player = _get_active_player()
+    if not player:
+        return {"success": False}
     player.queue.clear()
-    await player.skip()
-    return {"success": True, "message": "Stopped playback."}
+    return {"success": True}
 
 
-@app.post("/api/control/{guild_id}/stop")
-async def remote_stop(guild_id: int):
-    """Stop playback and clear queue."""
-    return await dispatch_to_bot(_do_stop, guild_id)
-
-
-@app.post("/api/control/{guild_id}/shuffle")
-async def remote_shuffle(guild_id: int):
-    """Shuffle the upcoming queue."""
-    player = _get_player_or_404(guild_id)
-    if len(player.queue) < 2:
-        raise HTTPException(status_code=400, detail="Not enough tracks to shuffle.")
+@app.post("/api/shuffle")
+async def api_shuffle():
+    player = _get_active_player()
+    if not player:
+        return {"success": False}
     player.queue.shuffle()
-    return {"success": True, "message": "Queue shuffled."}
+    return {"success": True}
 
 
-async def _do_filter(guild_id: int, preset: str):
-    player = _get_player_or_404(guild_id)
-    filters: wavelink.Filters = player.filters
-    p = preset.lower()
+@app.post("/api/leave")
+async def api_leave():
+    player = _get_active_player()
+    if not player or not bot_instance:
+        return {"success": False}
 
-    if p == "bassboost":
-        filters.reset()
-        bass_bands = [(0, 0.30), (1, 0.25), (2, 0.20), (3, 0.15), (4, 0.10)]
-        filters.equalizer.set(bands=bass_bands)
-    elif p == "nightcore":
-        filters.reset()
-        filters.timescale.set(pitch=1.25, speed=1.25, rate=1.0)
-    elif p == "8d":
-        filters.reset()
-        filters.rotation.set(rotation_hz=0.2)
-    elif p == "vaporwave":
-        filters.reset()
-        filters.timescale.set(pitch=0.8, speed=0.85, rate=1.0)
-    elif p == "reset":
-        filters.reset()
-    else:
-        raise HTTPException(status_code=400, detail=f"Unknown filter: {preset}")
+    async def _action():
+        await player.disconnect(force=True)
+        return {"success": True}
 
-    await player.set_filters(filters)
-    active_filters[guild_id] = p
-    return {"success": True, "applied_filter": preset}
-
-
-@app.post("/api/control/{guild_id}/filter")
-async def remote_set_filter(guild_id: int, payload: FilterRequest):
-    """Apply audio filter preset."""
-    return await dispatch_to_bot(_do_filter, guild_id, payload.preset)
-
-
-@app.post("/api/control/{guild_id}/reorder")
-async def remote_reorder_queue(guild_id: int, payload: ReorderRequest):
-    """Swap or move a track position in the queue."""
-    player = _get_player_or_404(guild_id)
-    q_len = len(player.queue)
-    if payload.from_index >= q_len or payload.to_index >= q_len:
-        raise HTTPException(status_code=400, detail="Index out of bounds")
-
-    player.queue.swap(payload.from_index, payload.to_index)
-    return {"success": True, "message": f"Swapped positions {payload.from_index} and {payload.to_index}"}
-
-
-@app.delete("/api/control/{guild_id}/queue/{index}")
-async def remote_delete_queue_item(guild_id: int, index: int):
-    """Remove a track at a specific index from the queue."""
-    player = _get_player_or_404(guild_id)
-    if index < 0 or index >= len(player.queue):
-        raise HTTPException(status_code=400, detail="Invalid queue index")
-
-    player.queue.delete(index)
-    return {"success": True, "message": f"Removed track at index {index}"}
+    fut = asyncio.run_coroutine_threadsafe(_action(), bot_instance.loop)
+    return await asyncio.wrap_future(fut)
 
 
 # ------------------------------------------------------------------------------
-# 3. REAL-TIME WEBSOCKET ROUTE (1-Second Synchronized Heartbeat)
+# 4. WEBSOCKET GATEWAY FOR LIVE TERMINAL SYNCHRONIZATION
 # ------------------------------------------------------------------------------
-@app.websocket("/ws/{guild_id}")
-async def websocket_player_sync(websocket: WebSocket, guild_id: int):
-    """
-    WebSocket endpoint that synchronizes playback state, timestamps, and controls
-    with connected Web Remote Dashboard clients every 1 second.
-    """
+@app.websocket("/ws")
+@app.websocket("/api/ws")
+async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    logger.info(f"WebSocket client connected for guild {guild_id}")
+    logger.info("Terminal UI WebSocket connected.")
 
     try:
         while True:
-            # Check bot & player state
-            if bot_instance and bot_instance.is_ready():
-                guild = bot_instance.get_guild(guild_id)
-                if guild and guild.voice_client and isinstance(guild.voice_client, wavelink.Player):
-                    p: wavelink.Player = guild.voice_client
-
-                    track_info = None
-                    if p.current:
-                        track_info = {
-                            "title": p.current.title,
-                            "author": getattr(p.current, "author", "Unknown"),
-                            "duration_ms": getattr(p.current, "length", 0),
-                            "position_ms": p.position,
-                            "artwork_url": getattr(p.current, "artwork_url", None),
-                            "uri": getattr(p.current, "uri", None),
-                        }
-
-                    payload = {
-                        "type": "SYNC_STATE",
-                        "timestamp": int(time.time()),
-                        "guild_id": guild_id,
-                        "playing": p.playing,
-                        "paused": p.paused,
-                        "volume": p.volume,
-                        "position_ms": p.position,
-                        "queue_count": len(p.queue),
-                        "track": track_info
+            player = _get_active_player()
+            if player and player.connected:
+                curr_info = None
+                if player.current:
+                    curr_info = {
+                        "title": player.current.title,
+                        "author": getattr(player.current, "author", "Unknown"),
+                        "duration_ms": getattr(player.current, "length", 0),
+                        "artwork": getattr(player.current, "artwork", None),
+                        "uri": getattr(player.current, "uri", "")
                     }
-                    await websocket.send_json(payload)
-                else:
-                    await websocket.send_json({
-                        "type": "IDLE",
-                        "guild_id": guild_id,
-                        "message": "No active voice session in this guild."
-                    })
+
+                queue_list = [
+                    {
+                        "title": t.title,
+                        "author": getattr(t, "author", "Unknown"),
+                        "duration_ms": getattr(t, "length", 0),
+                        "artwork": getattr(t, "artwork", None)
+                    }
+                    for t in list(player.queue)[:20]
+                ]
+
+                data = {
+                    "type": "PLAYER_UPDATE",
+                    "guild_name": player.guild.name if player.guild else "Demon's Realm",
+                    "channel_name": player.channel.name if player.channel else "Music Lounge",
+                    "playing": player.playing,
+                    "paused": player.paused,
+                    "volume": player.volume,
+                    "position_ms": int(player.position),
+                    "current": curr_info,
+                    "queue": queue_list
+                }
+                await websocket.send_json(data)
             else:
-                await websocket.send_json({"type": "WAITING_BOT"})
+                await websocket.send_json({
+                    "type": "IDLE",
+                    "guild_name": "Demon's Realm",
+                    "channel_name": "Music Lounge"
+                })
 
-            # Sync interval: 1 second
             await asyncio.sleep(1.0)
-
     except WebSocketDisconnect:
-        logger.info(f"WebSocket client disconnected for guild {guild_id}")
+        logger.info("Terminal UI WebSocket disconnected.")
     except Exception as e:
-        logger.error(f"WebSocket error in guild {guild_id}: {e}")
-        try:
-            await websocket.close()
-        except:
-            pass
-
-
-# ------------------------------------------------------------------------------
-# 4. SPOTIFY OAUTH AUTHENTICATION ROUTES
-# ------------------------------------------------------------------------------
-def _create_spotify_oauth(user_id: int) -> SpotifyOAuth:
-    """Instantiate Spotify OAuth handler with user state."""
-    return SpotifyOAuth(
-        client_id=SPOTIFY_CLIENT_ID,
-        client_secret=SPOTIFY_CLIENT_SECRET,
-        redirect_uri=SPOTIFY_REDIRECT_URI,
-        scope=SPOTIFY_SCOPE,
-        state=str(user_id),
-        show_dialog=True
-    )
-
-
-@app.get("/api/spotify/login")
-async def spotify_login(user_id: int = Query(..., description="Discord User ID")):
-    """Generates Spotify OAuth authorization URL."""
-    if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
-        raise HTTPException(
-            status_code=500,
-            detail="Spotify API credentials are not configured in .env."
-        )
-
-    sp_oauth = _create_spotify_oauth(user_id)
-    auth_url = sp_oauth.get_authorize_url()
-    return {"auth_url": auth_url}
-
-
-@app.get("/api/spotify/callback", response_class=HTMLResponse)
-async def spotify_callback(code: str = Query(...), state: Optional[str] = Query(None)):
-    """Handles Spotify OAuth callback and stores credentials in SQLite."""
-    if not state:
-        raise HTTPException(status_code=400, detail="Missing Discord user state in callback.")
-
-    try:
-        user_id = int(state)
-        sp_oauth = _create_spotify_oauth(user_id)
-        token_info = sp_oauth.get_access_token(code, check_cache=False)
-
-        if not token_info or "access_token" not in token_info:
-            raise HTTPException(status_code=400, detail="Failed to retrieve Spotify access token.")
-
-        access_token = token_info["access_token"]
-        refresh_token = token_info.get("refresh_token", "")
-        expires_at = token_info.get("expires_at", time.time() + 3600)
-
-        # Fetch Spotify User ID
-        sp = spotipy.Spotify(auth=access_token)
-        sp_user = sp.current_user()
-        sp_user_id = sp_user.get("id") if sp_user else None
-
-        # Save to async SQLite DB
-        await db_manager.save_spotify_token(
-            user_id=user_id,
-            access_token=access_token,
-            refresh_token=refresh_token,
-            expires_at=expires_at,
-            spotify_user_id=sp_user_id
-        )
-
-        # Return luxury confirmation page
-        return f"""
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <title>Kushida — Spotify Connected</title>
-            <style>
-                body {{
-                    background: #0d0d12;
-                    color: #ffffff;
-                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                    display: flex;
-                    justify-content: center;
-                    align-items: center;
-                    height: 100vh;
-                    margin: 0;
-                }}
-                .card {{
-                    background: #181820;
-                    border: 1px solid #6b21a8;
-                    border-radius: 16px;
-                    padding: 40px;
-                    text-align: center;
-                    max-width: 450px;
-                    box-shadow: 0 10px 30px rgba(107, 33, 168, 0.3);
-                }}
-                h1 {{ color: #10b981; margin-bottom: 10px; font-size: 26px; }}
-                p {{ color: #a1a1aa; line-height: 1.6; }}
-                .badge {{
-                    background: #27272a;
-                    color: #38bdf8;
-                    padding: 6px 14px;
-                    border-radius: 20px;
-                    font-size: 13px;
-                    display: inline-block;
-                    margin-top: 15px;
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="card">
-                <h1>💚 Spotify Connected!</h1>
-                <p>Your Spotify account has been successfully linked with <strong>Kushida Luxury Sound</strong>.</p>
-                <p>You can now click the <strong>💚 Save to Spotify</strong> button on Discord to instantly like any currently playing track.</p>
-                <div class="badge">You can close this window now.</div>
-            </div>
-        </body>
-        </html>
-        """
-    except Exception as e:
-        logger.error(f"Error handling Spotify OAuth callback: {e}")
-        return f"""
-        <!DOCTYPE html>
-        <html lang="en">
-        <body style="background: #0d0d12; color: #f43f5e; font-family: sans-serif; text-align: center; padding-top: 100px;">
-            <h2>❌ Authentication Failed</h2>
-            <p style="color: #a1a1aa;">{str(e)}</p>
-        </body>
-        </html>
-        """
+        logger.error(f"WebSocket error: {e}")
