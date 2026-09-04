@@ -210,11 +210,26 @@ class Audio(commands.Cog):
                     await ctx.send(content)
 
         # Connect or get player
-        player: wavelink.Player
-        if not ctx.voice_client:
-            player = await ctx.author.voice.channel.connect(cls=wavelink.Player)
-        else:
-            player = ctx.voice_client
+        player: Optional[wavelink.Player] = ctx.voice_client
+        target_vc = ctx.author.voice.channel
+
+        if not player or not player.connected:
+            if player:
+                try:
+                    await player.disconnect(force=True)
+                except Exception:
+                    pass
+            try:
+                player = await target_vc.connect(cls=wavelink.Player, timeout=15)
+            except Exception as e:
+                logger.error(f"Voice connect error: {e}")
+                await _reply(f"❌ Could not connect to **{target_vc.name}**. Please check bot voice permissions.")
+                return
+        elif player.channel.id != target_vc.id:
+            try:
+                await player.move_to(target_vc)
+            except Exception:
+                pass
 
         player.text_channel = ctx.channel
 
