@@ -74,6 +74,7 @@ async def get_prefix(bot_inst, message: discord.Message):
 bot = commands.Bot(
     command_prefix=get_prefix,
     intents=intents,
+    help_command=None,
     activity=discord.Activity(
         type=discord.ActivityType.listening,
         name=BOT_STATUS
