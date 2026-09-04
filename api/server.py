@@ -100,6 +100,21 @@ def _get_player_or_404(guild_id: int) -> wavelink.Player:
     return player
 
 
+async def dispatch_to_bot(coro_fn, *args, **kwargs):
+    """Executes a coroutine thread-safely inside the Discord Bot's event loop."""
+    if not bot_instance or not bot_instance.loop or not bot_instance.loop.is_running():
+        raise HTTPException(status_code=503, detail="Discord bot loop is not running.")
+
+    coro = coro_fn(*args, **kwargs)
+    future = asyncio.run_coroutine_threadsafe(coro, bot_instance.loop)
+    try:
+        # Wrap future inside asyncio.wrap_future so FastAPI can await it cleanly
+        return await asyncio.wrap_future(future)
+    except Exception as e:
+        logger.error(f"Error executing dispatched bot action: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ------------------------------------------------------------------------------
 # 1. BOT & GUILD STATUS ROUTES
 # ------------------------------------------------------------------------------
@@ -138,48 +153,47 @@ async def list_bot_guilds():
     result = []
     for g in bot_instance.guilds:
         player = g.voice_client
-        is_playing = False
-        track_title = None
-
-        if player and isinstance(player, wavelink.Player) and player.current:
-            is_playing = player.playing
-            track_title = player.current.title
+        active = False
+        curr_track = None
+        if player and isinstance(player, wavelink.Player) and player.connected:
+            active = True
+            if player.current:
+                curr_track = player.current.title
 
         result.append({
             "id": g.id,
             "name": g.name,
             "icon_url": g.icon.url if g.icon else None,
             "member_count": g.member_count,
-            "has_player": player is not None,
-            "is_playing": is_playing,
-            "current_track": track_title
+            "has_active_player": active,
+            "current_track": curr_track
         })
     return result
 
 
 @app.get("/api/status/{guild_id}")
 async def get_guild_player_status(guild_id: int):
-    """Get detailed live player information for a specific guild."""
+    """Returns real-time player telemetry for a specific guild."""
     player = _get_player_or_404(guild_id)
 
     track_data = None
     if player.current:
-        track = player.current
+        c = player.current
         track_data = {
-            "title": track.title,
-            "author": getattr(track, "author", "Unknown"),
-            "duration_ms": getattr(track, "length", 0),
+            "title": c.title,
+            "author": getattr(c, "author", "Unknown"),
+            "duration_ms": getattr(c, "length", 0),
             "position_ms": player.position,
-            "artwork_url": getattr(track, "artwork_url", None),
-            "uri": getattr(track, "uri", None),
+            "artwork_url": getattr(c, "artwork_url", None),
+            "uri": getattr(c, "uri", None),
         }
 
-    queue_mode_name = "normal"
-    if hasattr(player.queue, "mode"):
-        if player.queue.mode == wavelink.QueueMode.loop:
-            queue_mode_name = "track"
-        elif player.queue.mode == wavelink.QueueMode.loop_all:
-            queue_mode_name = "queue"
+    loop_label = "normal"
+    q_mode = getattr(player.queue, "mode", wavelink.QueueMode.normal)
+    if q_mode == wavelink.QueueMode.loop:
+        loop_label = "track"
+    elif q_mode == wavelink.QueueMode.loop_all:
+        loop_label = "queue"
 
     return {
         "guild_id": guild_id,
@@ -188,7 +202,7 @@ async def get_guild_player_status(guild_id: int):
         "paused": player.paused,
         "volume": player.volume,
         "position_ms": player.position,
-        "loop_mode": queue_mode_name,
+        "loop_mode": loop_label,
         "queue_count": len(player.queue),
         "current_track": track_data
     }
@@ -200,9 +214,9 @@ async def get_guild_queue(guild_id: int):
     player = _get_player_or_404(guild_id)
 
     tracks = []
-    for idx, t in enumerate(player.queue):
+    for i, t in enumerate(list(player.queue)):
         tracks.append({
-            "index": idx,
+            "index": i,
             "title": t.title,
             "author": getattr(t, "author", "Unknown"),
             "duration_ms": getattr(t, "length", 0),
@@ -218,43 +232,30 @@ async def get_guild_queue(guild_id: int):
 
 
 # ------------------------------------------------------------------------------
-# 2. REMOTE PLAYBACK CONTROL ROUTES
+# 2. REMOTE PLAYBACK CONTROL ROUTES (Threadsafe Dispatches)
 # ------------------------------------------------------------------------------
-@app.post("/api/control/{guild_id}/play")
-async def remote_play(guild_id: int, payload: PlayRequest):
-    """Queue and play a track remotely from the Web Dashboard."""
-    if not bot_instance:
-        raise HTTPException(status_code=503, detail="Bot not initialized")
-
+async def _do_play(guild_id: int, query: str, voice_channel_id: Optional[int]):
     guild = bot_instance.get_guild(guild_id)
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
 
     player: Optional[wavelink.Player] = getattr(guild, "voice_client", None)
-
-    # If no player, connect to voice channel
     if not player or not player.connected:
         vc = None
-        if payload.voice_channel_id:
-            vc = guild.get_channel(payload.voice_channel_id)
-
-        # If not specified, pick first voice channel with members
+        if voice_channel_id:
+            vc = guild.get_channel(voice_channel_id)
         if not vc:
             for c in guild.voice_channels:
                 if len(c.members) > 0:
                     vc = c
                     break
-
         if not vc and guild.voice_channels:
             vc = guild.voice_channels[0]
-
         if not vc:
-            raise HTTPException(status_code=400, detail="No suitable voice channel found to connect.")
-
+            raise HTTPException(status_code=400, detail="No voice channel available")
         player = await vc.connect(cls=wavelink.Player)
 
-    # Search and queue track
-    search_results = await wavelink.Playable.search(payload.query)
+    search_results = await wavelink.Playable.search(query)
     if not search_results:
         raise HTTPException(status_code=404, detail="No tracks found for query.")
 
@@ -273,56 +274,90 @@ async def remote_play(guild_id: int, payload: PlayRequest):
     return {"success": True, "message": msg}
 
 
-@app.post("/api/control/{guild_id}/pause")
-async def remote_pause_toggle(guild_id: int):
-    """Toggle pause state."""
+@app.post("/api/control/{guild_id}/play")
+async def remote_play(guild_id: int, payload: PlayRequest):
+    """Queue and play a track remotely from the Web Dashboard."""
+    return await dispatch_to_bot(_do_play, guild_id, payload.query, payload.voice_channel_id)
+
+
+async def _do_pause(guild_id: int):
     player = _get_player_or_404(guild_id)
     new_state = not player.paused
     await player.pause(new_state)
     return {"success": True, "paused": new_state}
 
 
-@app.post("/api/control/{guild_id}/skip")
-async def remote_skip(guild_id: int):
-    """Skip to next track."""
+@app.post("/api/control/{guild_id}/pause")
+async def remote_pause_toggle(guild_id: int):
+    """Toggle pause state thread-safely."""
+    return await dispatch_to_bot(_do_pause, guild_id)
+
+
+async def _do_skip(guild_id: int):
     player = _get_player_or_404(guild_id)
     await player.skip()
     return {"success": True, "message": "Skipped track."}
 
 
-@app.post("/api/control/{guild_id}/previous")
-async def remote_previous(guild_id: int):
-    """Play previous track from history."""
-    if not bot_instance:
-        raise HTTPException(status_code=503, detail="Bot not initialized")
+@app.post("/api/control/{guild_id}/skip")
+async def remote_skip(guild_id: int):
+    """Skip to next track thread-safely."""
+    return await dispatch_to_bot(_do_skip, guild_id)
 
+
+async def _do_previous(guild_id: int):
     audio_cog = bot_instance.get_cog("Audio")
     if not audio_cog:
         raise HTTPException(status_code=500, detail="Audio engine unavailable")
-
     success = await audio_cog.play_previous_track(guild_id)
     if not success:
         raise HTTPException(status_code=400, detail="No previous track found in history")
-
     return {"success": True, "message": "Replaying previous track."}
+
+
+@app.post("/api/control/{guild_id}/previous")
+async def remote_previous(guild_id: int):
+    """Play previous track from history thread-safely."""
+    return await dispatch_to_bot(_do_previous, guild_id)
+
+
+async def _do_volume(guild_id: int, volume: int):
+    player = _get_player_or_404(guild_id)
+    await player.set_volume(volume)
+    return {"success": True, "volume": volume}
 
 
 @app.post("/api/control/{guild_id}/volume")
 async def remote_set_volume(guild_id: int, payload: VolumeRequest):
     """Set volume level (0-200%)."""
+    return await dispatch_to_bot(_do_volume, guild_id, payload.volume)
+
+
+async def _do_seek(guild_id: int, position_ms: int):
     player = _get_player_or_404(guild_id)
-    await player.set_volume(payload.volume)
-    return {"success": True, "volume": payload.volume}
+    if not player.current:
+        raise HTTPException(status_code=400, detail="No track playing to seek.")
+    await player.seek(position_ms)
+    return {"success": True, "position_ms": position_ms}
 
 
 @app.post("/api/control/{guild_id}/seek")
 async def remote_seek(guild_id: int, payload: SeekRequest):
     """Seek to specific millisecond timestamp."""
+    return await dispatch_to_bot(_do_seek, guild_id, payload.position_ms)
+
+
+async def _do_stop(guild_id: int):
     player = _get_player_or_404(guild_id)
-    if not player.current:
-        raise HTTPException(status_code=400, detail="No track playing to seek.")
-    await player.seek(payload.position_ms)
-    return {"success": True, "position_ms": payload.position_ms}
+    player.queue.clear()
+    await player.skip()
+    return {"success": True, "message": "Stopped playback."}
+
+
+@app.post("/api/control/{guild_id}/stop")
+async def remote_stop(guild_id: int):
+    """Stop playback and clear queue."""
+    return await dispatch_to_bot(_do_stop, guild_id)
 
 
 @app.post("/api/control/{guild_id}/shuffle")
@@ -335,33 +370,37 @@ async def remote_shuffle(guild_id: int):
     return {"success": True, "message": "Queue shuffled."}
 
 
-@app.post("/api/control/{guild_id}/filter")
-async def remote_set_filter(guild_id: int, payload: FilterRequest):
-    """Apply audio filter preset."""
+async def _do_filter(guild_id: int, preset: str):
     player = _get_player_or_404(guild_id)
     filters: wavelink.Filters = player.filters
-    preset = payload.preset.lower()
+    p = preset.lower()
 
-    if preset == "bassboost":
+    if p == "bassboost":
         filters.reset()
         bass_bands = [(0, 0.30), (1, 0.25), (2, 0.20), (3, 0.15), (4, 0.10)]
         filters.equalizer.set(bands=bass_bands)
-    elif preset == "nightcore":
+    elif p == "nightcore":
         filters.reset()
         filters.timescale.set(pitch=1.25, speed=1.25, rate=1.0)
-    elif preset == "8d":
+    elif p == "8d":
         filters.reset()
         filters.rotation.set(rotation_hz=0.2)
-    elif preset == "vaporwave":
+    elif p == "vaporwave":
         filters.reset()
         filters.timescale.set(pitch=0.8, speed=0.85, rate=1.0)
-    elif preset == "reset":
+    elif p == "reset":
         filters.reset()
     else:
         raise HTTPException(status_code=400, detail=f"Unknown filter: {preset}")
 
     await player.set_filters(filters)
     return {"success": True, "applied_filter": preset}
+
+
+@app.post("/api/control/{guild_id}/filter")
+async def remote_set_filter(guild_id: int, payload: FilterRequest):
+    """Apply audio filter preset."""
+    return await dispatch_to_bot(_do_filter, guild_id, payload.preset)
 
 
 @app.post("/api/control/{guild_id}/reorder")
