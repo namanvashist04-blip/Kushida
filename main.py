@@ -1,7 +1,7 @@
 """
 ================================================================================
-  KUSHIDA — LUXURY DISCORD MUSIC ARCHITECTURE
-  MODULE: main.py (Bot Core, Cog Loading, Wavelink NodePool & FastAPI Background Server)
+  DEMON MUSIC — LUXURY DISCORD MUSIC ARCHITECTURE
+  MODULE: main.py (Bot Core, 67 Slash Commands Cogs, Wavelink NodePool & FastAPI Background Server)
 ================================================================================
 """
 
@@ -10,13 +10,15 @@ import logging
 import os
 import sys
 import threading
+from typing import Dict, Any, Optional
+
 import uvicorn
 import discord
 from discord.ext import commands
-
 import wavelink
 
 from config import (
+    BOT_NAME,
     BOT_TOKEN,
     BOT_STATUS,
     LAVALINK_URI,
@@ -24,9 +26,6 @@ from config import (
     LAVALINK_IDENTIFIER,
     API_HOST,
     API_PORT,
-    DASHBOARD_PORT,
-    DASHBOARD_URL,
-    API_BASE_URL,
 )
 from database import db_manager
 from utils.luxury_ui import MusicControlView
@@ -49,30 +48,16 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout)
     ]
 )
-logger = logging.getLogger("kushida.core")
+logger = logging.getLogger("demon.core")
 
 # ------------------------------------------------------------------------------
-# DISCORD BOT INITIALIZATION (Dual Slash & Dynamic Prefix Support)
+# DISCORD BOT INITIALIZATION (Slash Commands Exclusively)
 # ------------------------------------------------------------------------------
 intents = discord.Intents.default()
 intents.voice_states = True
 intents.guilds = True
-intents.message_content = True  # Required for prefix commands (-play, -help, etc.)
-
-prefix_cache: Dict[int, str] = {}
-
-async def get_prefix(bot_inst, message: discord.Message):
-    if not message.guild:
-        return "-"
-    guild_id = message.guild.id
-    if guild_id in prefix_cache:
-        return prefix_cache[guild_id]
-    p = await db_manager.get_guild_prefix(guild_id)
-    prefix_cache[guild_id] = p
-    return p
 
 bot = commands.Bot(
-    command_prefix=get_prefix,
     intents=intents,
     help_command=None,
     activity=discord.Activity(
@@ -80,7 +65,6 @@ bot = commands.Bot(
         name=BOT_STATUS
     )
 )
-bot.prefix_cache = prefix_cache
 
 # Inject bot instance into FastAPI context
 set_bot_instance(bot)
@@ -91,16 +75,16 @@ set_bot_instance(bot)
 # ------------------------------------------------------------------------------
 @bot.event
 async def on_ready():
-    """Triggered when the bot is connected to Discord Gateway."""
-    ascii_banner = r"""
-  _  ___   _ ____  _   _ ___ ____    _    
- | |/ / | | / ___|| | | |_ _|  _ \  / \   
- | ' /| | | \___ \| |_| || || | | |/ _ \  
- | . \| |_| |___) |  _  || || |_| / ___ \ 
- |_|\_\\___/|____/|_| |_|___|____/_/   \_\
-        -- LUXURY DISCORD AUDIO & REMOTE --
+    """Triggered when the bot connects to Discord Gateway."""
+    banner = r"""
+  ____  _____ __  __  ___  _   _   __  __ _   _ ____ ___ ____ 
+ |  _ \| ____|  \/  |/ _ \| \ | | |  \/  | | | / ___|_ _/ ___|
+ | | | |  _| | |\/| | | | |  \| | | |\/| | | | \___ \| | |    
+ | |_| | |___| |  | | |_| | |\  | | |  | | |_| |___) | | |___ 
+ |____/|_____|_|  |_|\___/|_| \_| |_|  |_|\___/|____/___\____|
+         -- DEMON MUSIC TERMINAL 24/7 AUDIO CLOUD --
     """
-    print(ascii_banner)
+    print(banner)
     logger.info(f"✨ Logged in as: {bot.user} (ID: {bot.user.id})")
     logger.info(f"Connected to {len(bot.guilds)} Discord guilds.")
 
@@ -156,7 +140,7 @@ async def on_ready():
         logger.error(f"Failed to connect to Lavalink node at {LAVALINK_URI}: {e}")
         logger.warning("Playback commands will retry upon execution.")
 
-    logger.info("⚡ Kushida 24/7 Core Engine is Active")
+    logger.info("⚡ Demon Music 24/7 Core Engine is Active")
 
 
 # ------------------------------------------------------------------------------
@@ -175,7 +159,7 @@ async def on_application_command_error(ctx: discord.ApplicationContext, error: E
         elif isinstance(error, wavelink.WavelinkException):
             msg = f"⚠️ Audio Engine Error: `{str(error)[:100]}`"
         else:
-            msg = f"❌ An unexpected error occurred: `{str(error)[:100]}`"
+            msg = f"❌ An error occurred: `{str(error)[:100]}`"
 
         if ctx.response.is_done():
             await ctx.followup.send(msg)
@@ -186,38 +170,16 @@ async def on_application_command_error(ctx: discord.ApplicationContext, error: E
 
 
 # ------------------------------------------------------------------------------
-# MESSAGE & PREFIX COMMAND DISPATCHER
-# ------------------------------------------------------------------------------
-@bot.event
-async def on_message(message: discord.Message):
-    """Processes message prefix commands for non-bot users."""
-    if message.author.bot:
-        return
-    await bot.process_commands(message)
-
-
-@bot.event
-async def on_command_error(ctx: commands.Context, error: Exception):
-    """Handle prefix command errors gracefully."""
-    if isinstance(error, commands.CommandNotFound):
-        return
-    if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"❌ Missing argument: `{error.param.name}`. Use `-help` to see command syntax.")
-        return
-    if isinstance(error, commands.CommandOnCooldown):
-        await ctx.send(f"⏳ Please wait {error.retry_after:.1f}s before using this command again.")
-        return
-    logger.error(f"Prefix command error in {ctx.command}: {error}")
-
-
-# ------------------------------------------------------------------------------
-# EXTENSION (COG) LOADER
+# EXTENSION (COG) LOADER — ALL 67 COMMANDS IN 5 COGS
 # ------------------------------------------------------------------------------
 def load_all_cogs():
-    """Load core modular cogs (Music & System)."""
+    """Load all 5 cogs containing the complete 67 slash commands."""
     extensions = [
-        "cogs.audio",
-        "cogs.system"
+        "cogs.music",      # 21 Music Commands
+        "cogs.filters",    # 15 Audio DSP Filters
+        "cogs.playlists",  # 12 Custom Playlists
+        "cogs.settings",   # 6 Server & DJ Settings
+        "cogs.info"        # 13 Info & Utilities
     ]
     for ext in extensions:
         try:
@@ -232,7 +194,7 @@ def load_all_cogs():
 # ------------------------------------------------------------------------------
 def run_fastapi_server():
     """Runs FastAPI in a dedicated background daemon thread with Uvicorn."""
-    logger.info(f"Starting FastAPI background server on {API_HOST}:{API_PORT}...")
+    logger.info(f"Starting Demon Music Terminal Web Server on {API_HOST}:{API_PORT}...")
     uvicorn.run(
         fastapi_app,
         host=API_HOST,
@@ -255,15 +217,13 @@ def start_background_api():
 def main():
     """Application Bootstrapper."""
     if not BOT_TOKEN:
-        logger.critical(
-            "FATAL: BOT_TOKEN is missing in `.env` file! Please configure your token before running."
-        )
+        logger.critical("FATAL: BOT_TOKEN is missing in `.env` file! Please configure your token.")
         sys.exit(1)
 
-    # 1. Start FastAPI server thread
+    # 1. Start FastAPI server thread (Terminal Web UI + REST + WebSocket)
     start_background_api()
 
-    # 2. Load all Cogs
+    # 2. Load all 5 Cogs (67 Slash Commands)
     load_all_cogs()
 
     # 3. Start Discord Bot Gateway Loop
