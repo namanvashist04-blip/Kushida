@@ -114,10 +114,15 @@ async def get_general_status():
         if g.voice_client and isinstance(g.voice_client, wavelink.Player) and g.voice_client.playing
     )
 
+    import math
+    latency_val = 0.0
+    if bot_instance.latency and not math.isnan(bot_instance.latency) and not math.isinf(bot_instance.latency):
+        latency_val = round(bot_instance.latency * 1000, 2)
+
     return {
         "status": "online",
         "bot_ready": bot_instance.is_ready(),
-        "latency_ms": round(bot_instance.latency * 1000, 2),
+        "latency_ms": latency_val,
         "guild_count": len(bot_instance.guilds),
         "active_players": active_players,
         "user": str(bot_instance.user) if bot_instance.user else "Kushida#0000"
