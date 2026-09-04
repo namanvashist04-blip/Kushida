@@ -180,6 +180,20 @@ class MusicCog(commands.Cog, name="Music"):
         except Exception as e:
             logger.error(f"Error updating panel in guild {player.guild.id}: {e}")
 
+    async def play_previous_track(self, guild_id: int) -> bool:
+        guild = self.bot.get_guild(guild_id)
+        if not guild or not guild.voice_client:
+            return False
+        player: wavelink.Player = guild.voice_client
+        history = self.history.get(guild_id, [])
+        if len(history) < 2:
+            return False
+        history.pop()  # current
+        prev_track = history.pop()  # previous
+        await player.play(prev_track)
+        return True
+
+
     # ==========================================================================
     # 1. /play [query] (and alias /p)
     # ==========================================================================
