@@ -193,8 +193,21 @@ class Audio(commands.Cog):
                 await ctx.send(msg)
             return
 
-        if isinstance(ctx, discord.ApplicationContext):
+        is_slash = isinstance(ctx, discord.ApplicationContext)
+        if is_slash:
             await ctx.defer()
+
+        async def _reply(content=None, embed=None):
+            if is_slash:
+                if embed:
+                    await ctx.followup.send(embed=embed)
+                else:
+                    await ctx.followup.send(content)
+            else:
+                if embed:
+                    await ctx.send(embed=embed)
+                else:
+                    await ctx.send(content)
 
         # Connect or get player
         player: wavelink.Player
@@ -205,14 +218,25 @@ class Audio(commands.Cog):
 
         player.text_channel = ctx.channel
 
-        # Search tracks
-        search_results: wavelink.Search = await wavelink.Playable.search(query)
+        # Normalize YouTube Music URLs to standard youtube.com URLs
+        clean_query = query.strip()
+        if "music.youtube.com" in clean_query:
+            clean_query = clean_query.replace("music.youtube.com", "www.youtube.com")
+
+        # Search tracks with graceful error catching
+        try:
+            search_results: wavelink.Search = await wavelink.Playable.search(clean_query)
+        except Exception as e:
+            logger.warning(f"Error loading tracks for '{clean_query}': {e}")
+            await _reply(
+                f"❌ **Audio Load Error:** Could not load tracks for this link.\n\n"
+                f"• Agar playlist hai, toh verify karein ki yeh **Public** ya **Unlisted** ho (Private playlists bot load nahi kar sakta).\n"
+                f"• Direct gaane ka naam daal kar bhi play kar sakte hain: `/play despacito`"
+            )
+            return
+
         if not search_results:
-            err = f"❌ No audio results found for `{query}`."
-            if isinstance(ctx, discord.ApplicationContext):
-                await ctx.respond(err, ephemeral=True)
-            else:
-                await ctx.send(err)
+            await _reply(f"❌ No audio results found for `{query}`.")
             return
 
         if isinstance(search_results, wavelink.Playlist):
@@ -224,21 +248,14 @@ class Audio(commands.Cog):
                 description=f"Added **{search_results.name}** (`{added} tracks`) to the queue.",
                 color=HEX_VIOLET
             )
-            if isinstance(ctx, discord.ApplicationContext):
-                await ctx.respond(embed=embed)
-            else:
-                await ctx.send(embed=embed)
+            await _reply(embed=embed)
         else:
             track: wavelink.Playable = search_results[0]
             setattr(track, "requester_id", ctx.author.id)
             await player.queue.put_wait(track)
 
             if not player.playing:
-                msg = f"🎵 Starting playback for **{track.title}**..."
-                if isinstance(ctx, discord.ApplicationContext):
-                    await ctx.respond(msg)
-                else:
-                    await ctx.send(msg)
+                await _reply(f"🎵 Starting playback for **{track.title}**...")
             else:
                 embed = discord.Embed(
                     title="➕ Track Queued",
@@ -247,10 +264,7 @@ class Audio(commands.Cog):
                 )
                 if getattr(track, "artwork_url", None):
                     embed.set_thumbnail(url=track.artwork_url)
-                if isinstance(ctx, discord.ApplicationContext):
-                    await ctx.respond(embed=embed)
-                else:
-                    await ctx.send(embed=embed)
+                await _reply(embed=embed)
 
         if not player.playing and not player.queue.is_empty:
             if player.paused:
