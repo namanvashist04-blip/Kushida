@@ -151,25 +151,32 @@ class Audio(commands.Cog):
         try:
             guild = player.guild
             coords = await db_manager.get_panel_message_id(guild.id)
+            if coords:
+                old_channel = guild.get_channel(coords[0])
+                if old_channel:
+                    try:
+                        old_msg = await old_channel.fetch_message(coords[1])
+                        await old_msg.delete()
+                    except Exception:
+                        pass
 
             embed = LuxuryEmbedBuilder.now_playing(player, track)
             view = self.persistent_view
 
-            if coords:
-                channel_id, message_id = coords
-                channel = guild.get_channel(channel_id)
-                if channel:
-                    try:
-                        existing_msg = await channel.fetch_message(message_id)
-                        await existing_msg.edit(embed=embed, view=view)
-                        return
-                    except discord.NotFound:
-                        pass  # Message was deleted, we'll post a fresh one
+            target_channel = getattr(player, "text_channel", None)
+            if not target_channel:
+                candidates = [tc for tc in guild.text_channels if tc.permissions_for(guild.me).send_messages]
+                for c in candidates:
+                    if any(k in c.name.lower() for k in ["music", "bot", "sound", "song", "command", "general"]):
+                        target_channel = c
+                        break
+                if not target_channel and candidates:
+                    target_channel = candidates[0]
 
-            # Post fresh panel in the active text channel
-            channel = getattr(player, "text_channel", None) or guild.text_channels[0]
-            new_msg = await channel.send(embed=embed, view=view)
-            await db_manager.set_panel_message_id(guild.id, channel.id, new_msg.id)
+            if target_channel:
+                player.text_channel = target_channel
+                new_msg = await target_channel.send(embed=embed, view=view)
+                await db_manager.set_panel_message_id(guild.id, target_channel.id, new_msg.id)
 
         except Exception as e:
             logger.error(f"Error rendering persistent panel in guild {player.guild.id}: {e}")
@@ -531,6 +538,11 @@ class Audio(commands.Cog):
             return
 
         await player.set_filters(filters)
+        try:
+            from api.server import active_filters
+            active_filters[ctx.guild.id] = preset
+        except Exception:
+            pass
         embed = discord.Embed(title="🎛️ Audio Processing", description=desc, color=HEX_VIOLET)
         await ctx.respond(embed=embed)
 
