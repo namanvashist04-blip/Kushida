@@ -312,6 +312,16 @@ class MusicControlView(View):
 
     def __init__(self):
         super().__init__(timeout=None)
+        # Add Link button in __init__ (URL buttons cannot have callback decorators)
+        self.add_item(
+            Button(
+                label="Web Remote",
+                style=ButtonStyle.link,
+                emoji="🌐",
+                url=DASHBOARD_URL,
+                row=2
+            )
+        )
 
     def _get_player(self, interaction: discord.Interaction) -> Optional[wavelink.Player]:
         """Safely fetch active Wavelink player for this guild."""
@@ -481,11 +491,6 @@ class MusicControlView(View):
             await interaction.followup.send(result["message"], ephemeral=True)
         else:
             await interaction.followup.send("❌ Spotify service integration unavailable.", ephemeral=True)
-
-    @button(label="Web Remote", style=ButtonStyle.link, emoji="🌐", url=DASHBOARD_URL, row=2)
-    async def web_remote_link(self, btn: Button, interaction: discord.Interaction):
-        # Link button: Discord handles redirect directly in client
-        pass
 
     # --------------------------------------------------------------------------
     # REFRESH HELPER
