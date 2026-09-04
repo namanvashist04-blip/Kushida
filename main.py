@@ -52,20 +52,34 @@ logging.basicConfig(
 logger = logging.getLogger("kushida.core")
 
 # ------------------------------------------------------------------------------
-# DISCORD BOT INITIALIZATION
+# DISCORD BOT INITIALIZATION (Dual Slash & Dynamic Prefix Support)
 # ------------------------------------------------------------------------------
 intents = discord.Intents.default()
 intents.voice_states = True
 intents.guilds = True
-# Note: Slash commands and UI views do not require message_content privileged intent!
+intents.message_content = True  # Required for prefix commands (-play, -help, etc.)
 
-bot = discord.Bot(
+prefix_cache: Dict[int, str] = {}
+
+async def get_prefix(bot_inst, message: discord.Message):
+    if not message.guild:
+        return "-"
+    guild_id = message.guild.id
+    if guild_id in prefix_cache:
+        return prefix_cache[guild_id]
+    p = await db_manager.get_guild_prefix(guild_id)
+    prefix_cache[guild_id] = p
+    return p
+
+bot = commands.Bot(
+    command_prefix=get_prefix,
     intents=intents,
     activity=discord.Activity(
         type=discord.ActivityType.listening,
         name=BOT_STATUS
     )
 )
+bot.prefix_cache = prefix_cache
 
 # Inject bot instance into FastAPI context
 set_bot_instance(bot)
@@ -149,13 +163,38 @@ async def on_application_command_error(ctx: discord.ApplicationContext, error: E
 
 
 # ------------------------------------------------------------------------------
+# MESSAGE & PREFIX COMMAND DISPATCHER
+# ------------------------------------------------------------------------------
+@bot.event
+async def on_message(message: discord.Message):
+    """Processes message prefix commands for non-bot users."""
+    if message.author.bot:
+        return
+    await bot.process_commands(message)
+
+
+@bot.event
+async def on_command_error(ctx: commands.Context, error: Exception):
+    """Handle prefix command errors gracefully."""
+    if isinstance(error, commands.CommandNotFound):
+        return
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(f"❌ Missing argument: `{error.param.name}`. Use `-help` to see command syntax.")
+        return
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"⏳ Please wait {error.retry_after:.1f}s before using this command again.")
+        return
+    logger.error(f"Prefix command error in {ctx.command}: {error}")
+
+
+# ------------------------------------------------------------------------------
 # EXTENSION (COG) LOADER
 # ------------------------------------------------------------------------------
 def load_all_cogs():
-    """Load core modular cogs."""
+    """Load core modular cogs (Music & System)."""
     extensions = [
         "cogs.audio",
-        "cogs.ai_engine"
+        "cogs.system"
     ]
     for ext in extensions:
         try:
