@@ -60,8 +60,14 @@ class Audio(commands.Cog):
         self.history: Dict[int, List[wavelink.Playable]] = {}
         # Active sleep timer tasks: guild_id -> asyncio.Task
         self.sleep_tasks: Dict[int, asyncio.Task] = {}
-        # Cached persistent control view instance
-        self.persistent_view = MusicControlView()
+        self._view: Optional[MusicControlView] = None
+
+    @property
+    def persistent_view(self) -> MusicControlView:
+        """Lazy instantiation of persistent view inside running event loop."""
+        if self._view is None:
+            self._view = MusicControlView()
+        return self._view
 
     # --------------------------------------------------------------------------
     # 1. WAVELINK EVENT LISTENERS (3.x Payload Architecture)
