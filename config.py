@@ -19,8 +19,8 @@ load_dotenv(BASE_DIR / ".env")
 # DISCORD BOT SETTINGS
 # ------------------------------------------------------------------------------
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
-BOT_PREFIX: str = os.getenv("BOT_PREFIX", "/")
-BOT_STATUS: str = os.getenv("BOT_STATUS", "vibe streams | /play")
+BOT_PREFIX: str = os.getenv("BOT_PREFIX", "-")
+BOT_STATUS: str = os.getenv("BOT_STATUS", "-help | /help")
 
 # ------------------------------------------------------------------------------
 # LAVALINK / WAVELINK CONFIGURATION
