@@ -78,6 +78,10 @@ class DatabaseManager:
                 await db.execute("ALTER TABLE guild_settings ADD COLUMN mode_247 INTEGER DEFAULT 0;")
             except Exception:
                 pass
+            try:
+                await db.execute("ALTER TABLE guild_settings ADD COLUMN voice_channel_id INTEGER;")
+            except Exception:
+                pass
 
             # Indexes for ultra-fast queries and VibeMatch analytics
             await db.execute("""
@@ -278,6 +282,30 @@ class DatabaseManager:
                     mode_247 = excluded.mode_247,
                     updated_at = CURRENT_TIMESTAMP
             """, (guild_id, 1 if enabled else 0))
+            await db.commit()
+
+    async def get_guild_247_channel(self, guild_id: int) -> Optional[int]:
+        """Fetch saved 24/7 voice channel ID for a guild."""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute("SELECT voice_channel_id FROM guild_settings WHERE guild_id = ?", (guild_id,))
+                row = await cursor.fetchone()
+                if row and row[0]:
+                    return row[0]
+        except Exception as e:
+            logger.error(f"Error fetching 247 voice channel for guild {guild_id}: {e}")
+        return None
+
+    async def set_guild_247_channel(self, guild_id: int, channel_id: Optional[int]) -> None:
+        """Save active 24/7 voice channel ID for a guild."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO guild_settings (guild_id, voice_channel_id)
+                VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    voice_channel_id = excluded.voice_channel_id,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (guild_id, channel_id))
             await db.commit()
 
     # --------------------------------------------------------------------------
