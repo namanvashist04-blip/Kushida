@@ -35,6 +35,13 @@ from api.server import app as fastapi_app, set_bot_instance
 # ------------------------------------------------------------------------------
 # LOGGING CONFIGURATION
 # ------------------------------------------------------------------------------
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
