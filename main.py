@@ -125,17 +125,38 @@ async def on_ready():
                 uri=LAVALINK_URI,
                 password=LAVALINK_PASSWORD,
                 identifier=LAVALINK_IDENTIFIER,
-                inactive_player_timeout=300
+                inactive_player_timeout=None
             )
         ]
         await wavelink.Pool.connect(nodes=nodes, client=bot)
         logger.info(f"Wavelink Pool connecting to Lavalink node: {LAVALINK_URI}")
+
+        # 4. Auto-reconnect 24/7 Guilds to their Voice Channels
+        async def _reconnect_247():
+            await asyncio.sleep(3)
+            for guild in bot.guilds:
+                try:
+                    is_247 = await db_manager.get_guild_247(guild.id)
+                    if is_247:
+                        vc_id = await db_manager.get_guild_247_channel(guild.id)
+                        vc = guild.get_channel(vc_id) if vc_id else None
+                        if not vc and guild.voice_channels:
+                            vc = guild.voice_channels[0]
+                        if vc:
+                            player = getattr(guild, "voice_client", None)
+                            if not player or not player.connected:
+                                await vc.connect(cls=wavelink.Player)
+                                logger.info(f"⏰ 24/7 Mode: Auto-reconnected to '{vc.name}' in '{guild.name}'")
+                except Exception as e:
+                    logger.error(f"Error restoring 24/7 VC for guild {guild.id}: {e}")
+
+        asyncio.create_task(_reconnect_247())
+
     except Exception as e:
         logger.error(f"Failed to connect to Lavalink node at {LAVALINK_URI}: {e}")
         logger.warning("Playback commands will retry upon execution.")
 
-    logger.info(f"🌐 Web Remote Dashboard: {DASHBOARD_URL}")
-    logger.info(f"⚡ FastAPI Backend API: {API_BASE_URL}/docs")
+    logger.info("⚡ Kushida 24/7 Core Engine is Active")
 
 
 # ------------------------------------------------------------------------------
