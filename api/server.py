@@ -52,6 +52,8 @@ app.add_middleware(
 
 # Global bot reference injected by main.py
 bot_instance: Optional[discord.Bot] = None
+# Global filter tracker: guild_id -> active filter preset name
+active_filters: Dict[int, str] = {}
 
 
 def set_bot_instance(bot: discord.Bot) -> None:
@@ -84,6 +86,22 @@ class ReorderRequest(BaseModel):
 # ------------------------------------------------------------------------------
 # HELPER FUNCTIONS
 # ------------------------------------------------------------------------------
+def _extract_artwork(track) -> Optional[str]:
+    """Safely extracts track artwork with YouTube thumbnail fallback."""
+    if not track:
+        return None
+    art = getattr(track, "artwork_url", None)
+    if art and isinstance(art, str) and art.startswith("http"):
+        return art
+    uri = getattr(track, "uri", None)
+    if uri and isinstance(uri, str):
+        import re
+        m = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", uri)
+        if m:
+            return f"https://img.youtube.com/vi/{m.group(1)}/hqdefault.jpg"
+    return None
+
+
 def _get_player_or_404(guild_id: int) -> wavelink.Player:
     """Retrieve player for a given guild ID or raise 404."""
     if not bot_instance:
@@ -177,14 +195,14 @@ async def get_guild_player_status(guild_id: int):
     player = _get_player_or_404(guild_id)
 
     track_data = None
-    if player.current:
+    if player.current and (player.playing or player.paused):
         c = player.current
         track_data = {
             "title": c.title,
             "author": getattr(c, "author", "Unknown"),
             "duration_ms": getattr(c, "length", 0),
             "position_ms": player.position,
-            "artwork_url": getattr(c, "artwork_url", None),
+            "artwork_url": _extract_artwork(c),
             "uri": getattr(c, "uri", None),
         }
 
@@ -195,6 +213,8 @@ async def get_guild_player_status(guild_id: int):
     elif q_mode == wavelink.QueueMode.loop_all:
         loop_label = "queue"
 
+    curr_filter = active_filters.get(guild_id, "reset")
+
     return {
         "guild_id": guild_id,
         "connected": player.connected,
@@ -203,6 +223,7 @@ async def get_guild_player_status(guild_id: int):
         "volume": player.volume,
         "position_ms": player.position,
         "loop_mode": loop_label,
+        "active_filter": curr_filter,
         "queue_count": len(player.queue),
         "current_track": track_data
     }
@@ -267,9 +288,22 @@ async def _do_play(guild_id: int, query: str, voice_channel_id: Optional[int]):
         await player.queue.put_wait(track)
         msg = f"Added '{track.title}' to queue."
 
+    # Ensure player has an active text channel assigned for discord panel rendering
+    if not getattr(player, "text_channel", None):
+        candidates = [tc for tc in guild.text_channels if tc.permissions_for(guild.me).send_messages]
+        for c in candidates:
+            if any(k in c.name.lower() for k in ["music", "bot", "sound", "song", "command", "general"]):
+                player.text_channel = c
+                break
+        if not player.text_channel and candidates:
+            player.text_channel = candidates[0]
+
     if not player.playing:
-        next_track = player.queue.get()
-        await player.play(next_track)
+        if player.paused:
+            await player.pause(False)
+        if not player.queue.is_empty:
+            next_track = player.queue.get()
+            await player.play(next_track)
 
     return {"success": True, "message": msg}
 
@@ -394,6 +428,7 @@ async def _do_filter(guild_id: int, preset: str):
         raise HTTPException(status_code=400, detail=f"Unknown filter: {preset}")
 
     await player.set_filters(filters)
+    active_filters[guild_id] = p
     return {"success": True, "applied_filter": preset}
 
 
