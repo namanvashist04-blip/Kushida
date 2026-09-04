@@ -38,6 +38,14 @@ class SettingsCog(commands.Cog, name="Settings & DJ"):
     @slash_command(name="247", description="♾️ Toggle 24/7 mode (Bot stays connected to VC indefinitely)")
     @default_permissions(administrator=True)
     async def toggle_247(self, ctx: discord.ApplicationContext):
+        await self._do_toggle_247(ctx)
+
+    @slash_command(name="24_7", description="♾️ Alias for /247")
+    @default_permissions(administrator=True)
+    async def toggle_24_7(self, ctx: discord.ApplicationContext):
+        await self._do_toggle_247(ctx)
+
+    async def _do_toggle_247(self, ctx: discord.ApplicationContext):
         if not ctx.author.guild_permissions.administrator:
             return await ctx.respond("❌ You need Administrator permission to use this command.", ephemeral=True)
 
