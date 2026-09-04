@@ -158,13 +158,20 @@ class LuxuryEmbedBuilder:
 
         # Active audio filter detection
         filter_badge = "`✨ Pure HQ`"
-        if hasattr(player, "filters") and player.filters:
-            if player.filters.timescale.speed > 1.0:
-                filter_badge = "`⚡ Nightcore`"
-            elif player.filters.rotation.rotation_hz > 0:
-                filter_badge = "`🎧 8D Audio`"
-            elif any(band[1] > 0.1 for band in player.filters.equalizer.raw):
-                filter_badge = "`🔊 Bassboost`"
+        try:
+            if hasattr(player, "filters") and player.filters:
+                ts = getattr(player.filters, "timescale", None)
+                rot = getattr(player.filters, "rotation", None)
+                eq = getattr(player.filters, "equalizer", None)
+
+                if ts and getattr(ts, "speed", 1.0) and getattr(ts, "speed", 1.0) > 1.0:
+                    filter_badge = "`⚡ Nightcore`"
+                elif rot and getattr(rot, "rotation_hz", 0) and getattr(rot, "rotation_hz", 0) > 0:
+                    filter_badge = "`🎧 8D Audio`"
+                elif eq and hasattr(eq, "raw") and eq.raw and any(band[1] > 0.1 for band in eq.raw):
+                    filter_badge = "`🔊 Bassboost`"
+        except Exception:
+            filter_badge = "`✨ Pure HQ`"
 
         # Construct minimalist pill row
         pills = f"{vol_badge}  {loop_badge}  {queue_badge}  {filter_badge}"
