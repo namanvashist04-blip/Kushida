@@ -131,18 +131,21 @@ async def on_application_command_error(ctx: discord.ApplicationContext, error: E
     """Graceful error catching for all slash commands."""
     logger.error(f"Slash Command Error in /{ctx.command.name}: {error}", exc_info=True)
 
-    if isinstance(error, commands.CommandOnCooldown):
-        await ctx.respond(f"⏳ Please wait {error.retry_after:.1f}s before using this command again.", ephemeral=True)
-    elif isinstance(error, commands.MissingPermissions):
-        await ctx.respond("❌ You do not have permission to use this command.", ephemeral=True)
-    elif isinstance(error, wavelink.WavelinkException):
-        await ctx.respond(f"⚠️ Audio Engine Error: `{str(error)}`", ephemeral=True)
-    else:
-        msg = f"❌ An unexpected error occurred: `{str(error)}`"
-        if ctx.response.is_done():
-            await ctx.followup.send(msg, ephemeral=True)
+    try:
+        if isinstance(error, commands.CommandOnCooldown):
+            await ctx.respond(f"⏳ Please wait {error.retry_after:.1f}s before using this command again.", ephemeral=True)
+        elif isinstance(error, commands.MissingPermissions):
+            await ctx.respond("❌ You do not have permission to use this command.", ephemeral=True)
+        elif isinstance(error, wavelink.WavelinkException):
+            await ctx.respond(f"⚠️ Audio Engine Error: `{str(error)}`", ephemeral=True)
         else:
-            await ctx.respond(msg, ephemeral=True)
+            msg = f"❌ An unexpected error occurred: `{str(error)}`"
+            if ctx.response.is_done():
+                await ctx.followup.send(msg, ephemeral=True)
+            else:
+                await ctx.respond(msg, ephemeral=True)
+    except Exception:
+        pass
 
 
 # ------------------------------------------------------------------------------
