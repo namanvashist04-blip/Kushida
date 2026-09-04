@@ -114,19 +114,43 @@ class System(commands.Cog):
     # 3. 24/7 MODE (Slash: /247 | Prefix: -247, -24/7)
     # --------------------------------------------------------------------------
     async def _do_247(self, ctx):
-        guild_id = ctx.guild.id
+        guild = ctx.guild
+        guild_id = guild.id
         current_state = await db_manager.get_guild_247(guild_id)
         new_state = not current_state
         await db_manager.set_guild_247(guild_id, new_state)
 
+        vc_channel = None
+        player: Optional[wavelink.Player] = guild.voice_client
+
+        if new_state:
+            # Determine which voice channel to stay in
+            if ctx.author.voice and ctx.author.voice.channel:
+                vc_channel = ctx.author.voice.channel
+            elif player and player.connected and player.channel:
+                vc_channel = player.channel
+            elif guild.voice_channels:
+                vc_channel = guild.voice_channels[0]
+
+            if vc_channel:
+                if not player or not player.connected:
+                    player = await vc_channel.connect(cls=wavelink.Player)
+                elif player.channel.id != vc_channel.id:
+                    await player.move_to(vc_channel)
+                player.text_channel = ctx.channel
+                await db_manager.set_guild_247_channel(guild_id, vc_channel.id)
+        else:
+            await db_manager.set_guild_247_channel(guild_id, None)
+
         status_text = "🟢 **Enabled**" if new_state else "🔴 **Disabled**"
+        ch_name = f" in **{vc_channel.name}**" if (new_state and vc_channel) else ""
         desc = (
-            f"24/7 Mode is now {status_text}!\n\n"
-            + ("Bot will remain in the voice channel 24/7 even if no one is listening."
+            f"24/7 Mode is now {status_text}{ch_name}!\n\n"
+            + ("Kushida will now stay in the voice channel **24/7 permanently**, even when no music is playing or no one is in the channel.\nBot will also auto-rejoin this VC on restart."
                if new_state else
-               "Bot will automatically disconnect after inactivity when idle.")
+               "24/7 Mode turned off. Bot will disconnect when idle.")
         )
-        embed = discord.Embed(title="⏰ 24/7 Mode Toggle", description=desc, color=HEX_VIOLET if new_state else HEX_ROSE)
+        embed = discord.Embed(title="⏰ 24/7 Mode System", description=desc, color=HEX_VIOLET if new_state else HEX_ROSE)
         if isinstance(ctx, discord.ApplicationContext):
             await ctx.respond(embed=embed)
         else:
