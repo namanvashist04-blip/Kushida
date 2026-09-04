@@ -25,11 +25,11 @@ BOT_STATUS: str = os.getenv("BOT_STATUS", "-help | /help")
 # ------------------------------------------------------------------------------
 # LAVALINK / WAVELINK CONFIGURATION
 # ------------------------------------------------------------------------------
-LAVALINK_HOST: str = os.getenv("LAVALINK_HOST", "127.0.0.1")
-LAVALINK_PORT: int = int(os.getenv("LAVALINK_PORT", "2333"))
-LAVALINK_PASSWORD: str = os.getenv("LAVALINK_PASSWORD", "youshallnotpass")
-LAVALINK_SECURE: bool = os.getenv("LAVALINK_SECURE", "false").lower() == "true"
-LAVALINK_IDENTIFIER: str = os.getenv("LAVALINK_IDENTIFIER", "Kushida-Node-01")
+LAVALINK_HOST: str = os.getenv("LAVALINK_HOST", "lava-v4.millohost.my.id")
+LAVALINK_PORT: int = int(os.getenv("LAVALINK_PORT", "443"))
+LAVALINK_PASSWORD: str = os.getenv("LAVALINK_PASSWORD", "https://discord.gg/mjS5J2K3ep")
+LAVALINK_SECURE: bool = os.getenv("LAVALINK_SECURE", "true").lower() == "true"
+LAVALINK_IDENTIFIER: str = os.getenv("LAVALINK_IDENTIFIER", "Kushida-Millohost-01")
 
 # Node URI constructed cleanly
 LAVALINK_URI: str = f"{'https' if LAVALINK_SECURE else 'http'}://{LAVALINK_HOST}:{LAVALINK_PORT}"
