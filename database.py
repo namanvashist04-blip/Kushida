@@ -63,9 +63,21 @@ class DatabaseManager:
                     default_volume INTEGER DEFAULT 100,
                     last_text_channel_id INTEGER,
                     persistent_panel_id INTEGER,
+                    prefix TEXT DEFAULT '-',
+                    mode_247 INTEGER DEFAULT 0,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+
+            # Ensure columns exist if table was already created
+            try:
+                await db.execute("ALTER TABLE guild_settings ADD COLUMN prefix TEXT DEFAULT '-';")
+            except Exception:
+                pass
+            try:
+                await db.execute("ALTER TABLE guild_settings ADD COLUMN mode_247 INTEGER DEFAULT 0;")
+            except Exception:
+                pass
 
             # Indexes for ultra-fast queries and VibeMatch analytics
             await db.execute("""
@@ -216,6 +228,57 @@ class DatabaseManager:
             if row and row[0] and row[1]:
                 return (row[0], row[1])
             return None
+
+    # --------------------------------------------------------------------------
+    # GUILD PREFIX & 24/7 SETTINGS
+    # --------------------------------------------------------------------------
+    async def get_guild_prefix(self, guild_id: int) -> str:
+        """Fetch custom command prefix for a guild (defaults to '-')."""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute("SELECT prefix FROM guild_settings WHERE guild_id = ?", (guild_id,))
+                row = await cursor.fetchone()
+                if row and row[0]:
+                    return row[0]
+        except Exception as e:
+            logger.error(f"Error fetching prefix for guild {guild_id}: {e}")
+        return "-"
+
+    async def set_guild_prefix(self, guild_id: int, prefix: str) -> None:
+        """Save custom command prefix for a guild."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO guild_settings (guild_id, prefix)
+                VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    prefix = excluded.prefix,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (guild_id, prefix))
+            await db.commit()
+
+    async def get_guild_247(self, guild_id: int) -> bool:
+        """Check if 24/7 mode is enabled for a guild."""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute("SELECT mode_247 FROM guild_settings WHERE guild_id = ?", (guild_id,))
+                row = await cursor.fetchone()
+                if row and row[0] is not None:
+                    return bool(row[0])
+        except Exception as e:
+            logger.error(f"Error fetching 247 mode for guild {guild_id}: {e}")
+        return False
+
+    async def set_guild_247(self, guild_id: int, enabled: bool) -> None:
+        """Enable or disable 24/7 mode for a guild."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO guild_settings (guild_id, mode_247)
+                VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    mode_247 = excluded.mode_247,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (guild_id, 1 if enabled else 0))
+            await db.commit()
 
     # --------------------------------------------------------------------------
     # SOCIAL VIBEMATCH ANALYTICS
