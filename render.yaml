@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: demon-music-terminal
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: LAVALINK_HOST
+        value: lava-v4.millohost.my.id
+      - key: LAVALINK_PORT
+        value: "443"
+      - key: LAVALINK_PASSWORD
+        value: https://discord.gg/mjS5J2K3ep
+      - key: LAVALINK_SECURE
+        value: "true"
+      - key: BOT_PREFIX
+        value: "-"
