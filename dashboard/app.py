@@ -145,14 +145,15 @@ st.markdown("""
         transform: translateY(-1px) !important;
     }
     div.stButton > button[kind="primary"] {
-        background: linear-gradient(135deg, #6b21a8, #7c3aed) !important;
-        border: 1px solid #a855f7 !important;
+        background: linear-gradient(135deg, #0284c7, #06b6d4) !important;
+        border: 2px solid #38bdf8 !important;
         color: #ffffff !important;
-        box-shadow: 0 4px 20px rgba(107, 33, 168, 0.5) !important;
+        box-shadow: 0 0 20px rgba(56, 189, 248, 0.8) !important;
+        font-weight: 700 !important;
     }
     div.stButton > button[kind="primary"]:hover {
-        background: linear-gradient(135deg, #7c3aed, #8b5cf6) !important;
-        box-shadow: 0 6px 28px rgba(107, 33, 168, 0.6) !important;
+        background: linear-gradient(135deg, #0369a1, #0891b2) !important;
+        box-shadow: 0 0 28px rgba(56, 189, 248, 1.0) !important;
     }
 
     /* ===== QUEUE ITEMS ===== */
@@ -319,6 +320,11 @@ with main_col:
         art_col, info_col = st.columns([1, 2.5])
         with art_col:
             art = track.get("artwork_url")
+            if not art and track.get("uri"):
+                import re
+                yt_m = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", track["uri"])
+                if yt_m:
+                    art = f"https://img.youtube.com/vi/{yt_m.group(1)}/hqdefault.jpg"
             if art and art.startswith("http"):
                 st.image(art, use_container_width=True)
             else:
@@ -380,8 +386,10 @@ with main_col:
             api(f"/api/control/{guild_id}/previous", "POST")
             st.rerun()
     with c2:
-        label = "▶️ Play" if (ps and ps.get("paused")) else "⏸ Pause"
-        if st.button(label, type="primary", use_container_width=True):
+        is_paused = bool(ps and ps.get("paused"))
+        play_label = "▶️ Resume" if is_paused else "⏸ Pause"
+        play_type = "primary" if is_paused else "secondary"
+        if st.button(play_label, type=play_type, use_container_width=True, key="btn_pause_resume"):
             api(f"/api/control/{guild_id}/pause", "POST")
             st.rerun()
     with c3:
@@ -419,11 +427,16 @@ with main_col:
         "🌊 Vaporwave": "vaporwave",
         "✨ Reset": "reset"
     }
+    active_filter = (ps.get("active_filter") or "reset").lower() if ps else "reset"
     for col, (label, preset) in zip([fc1, fc2, fc3, fc4, fc5], filter_map.items()):
         with col:
-            if st.button(label, use_container_width=True, key=f"f_{preset}"):
+            is_active = (preset.lower() == active_filter)
+            btn_type = "primary" if is_active else "secondary"
+            btn_label = f"✨ {label}" if is_active else label
+            if st.button(btn_label, type=btn_type, use_container_width=True, key=f"f_{preset}"):
                 api(f"/api/control/{guild_id}/filter", "POST", {"preset": preset})
                 st.toast(f"Applied {label}!")
+                st.rerun()
 
 
 # ------------------------------------------------------------------------------
