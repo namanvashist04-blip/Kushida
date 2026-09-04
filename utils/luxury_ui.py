@@ -190,6 +190,12 @@ class LuxuryEmbedBuilder:
 
         # High-res Thumbnail / Album Artwork
         artwork_url = getattr(track, "artwork_url", None)
+        if not artwork_url and hasattr(track, "uri") and track.uri:
+            import re
+            yt_match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", track.uri)
+            if yt_match:
+                artwork_url = f"https://img.youtube.com/vi/{yt_match.group(1)}/hqdefault.jpg"
+
         if artwork_url:
             embed.set_thumbnail(url=artwork_url)
 
