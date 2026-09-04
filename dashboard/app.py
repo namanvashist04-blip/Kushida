@@ -222,11 +222,11 @@ def api(endpoint, method="GET", data=None):
     url = f"{API_BASE_URL}{endpoint}"
     try:
         if method == "GET":
-            r = requests.get(url, timeout=3)
+            r = requests.get(url, timeout=1.5)
         elif method == "POST":
-            r = requests.post(url, json=data, timeout=3)
+            r = requests.post(url, json=data, timeout=1.5)
         elif method == "DELETE":
-            r = requests.delete(url, timeout=3)
+            r = requests.delete(url, timeout=1.5)
         else:
             return None
         return r.json() if r.status_code in [200, 201] else None
@@ -318,8 +318,15 @@ with main_col:
         # Album Art + Track Info
         art_col, info_col = st.columns([1, 2.5])
         with art_col:
-            art = track.get("artwork_url") or "https://placehold.co/300x300/18181b/6b21a8?text=🌌"
-            st.image(art, use_container_width=True)
+            art = track.get("artwork_url")
+            if art and art.startswith("http"):
+                st.image(art, use_container_width=True)
+            else:
+                st.markdown("""
+                <div style="width:100%; aspect-ratio:1; border-radius:14px; background:linear-gradient(135deg, #181824, #0d0d14); display:flex; align-items:center; justify-content:center; border:1px solid rgba(107,33,168,0.3); font-size:48px;">
+                    🌌
+                </div>
+                """, unsafe_allow_html=True)
 
         with info_col:
             st.markdown(f'<div class="np-title">{track["title"]}</div>', unsafe_allow_html=True)
@@ -504,8 +511,9 @@ with side_col:
 st.markdown("---")
 col_ref, col_info = st.columns([1, 2])
 with col_ref:
-    if st.checkbox("🔄 Live Sync (3s)", value=True):
-        time.sleep(3)
+    live = st.checkbox("🔄 Auto Refresh", value=False)
+    if live:
+        time.sleep(2)
         st.rerun()
 with col_info:
     st.caption("Anyone in the Discord voice channel can use this web remote • Powered by Kushida v2.0")
