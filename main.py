@@ -148,19 +148,20 @@ async def on_application_command_error(ctx: discord.ApplicationContext, error: E
 
     try:
         if isinstance(error, commands.CommandOnCooldown):
-            await ctx.respond(f"⏳ Please wait {error.retry_after:.1f}s before using this command again.", ephemeral=True)
+            msg = f"⏳ Please wait {error.retry_after:.1f}s before using this command again."
         elif isinstance(error, commands.MissingPermissions):
-            await ctx.respond("❌ You do not have permission to use this command.", ephemeral=True)
+            msg = "❌ You do not have permission to use this command."
         elif isinstance(error, wavelink.WavelinkException):
-            await ctx.respond(f"⚠️ Audio Engine Error: `{str(error)}`", ephemeral=True)
+            msg = f"⚠️ Audio Engine Error: `{str(error)[:100]}`"
         else:
-            msg = f"❌ An unexpected error occurred: `{str(error)}`"
-            if ctx.response.is_done():
-                await ctx.followup.send(msg, ephemeral=True)
-            else:
-                await ctx.respond(msg, ephemeral=True)
-    except Exception:
-        pass
+            msg = f"❌ An unexpected error occurred: `{str(error)[:100]}`"
+
+        if ctx.response.is_done():
+            await ctx.followup.send(msg)
+        else:
+            await ctx.respond(msg, ephemeral=True)
+    except Exception as e:
+        logger.error(f"Could not send error response to interaction: {e}")
 
 
 # ------------------------------------------------------------------------------
