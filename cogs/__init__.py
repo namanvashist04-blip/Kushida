@@ -1,0 +1,3 @@
+"""
+Kushida Cogs Package
+"""

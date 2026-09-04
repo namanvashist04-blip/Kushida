@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  lavalink:
+    image: ghcr.io/lavalink-devs/lavalink:4
+    container_name: kushida_lavalink
+    restart: unless-stopped
+    environment:
+      - _JAVA_OPTIONS=-Xmx1G
+    volumes:
+      - ./application.yml:/opt/Lavalink/application.yml
+      - ./plugins/:/opt/Lavalink/plugins/
+    ports:
+      - "2333:2333"
