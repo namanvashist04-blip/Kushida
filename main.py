@@ -13,6 +13,20 @@ import threading
 from typing import Dict, Any, Optional
 
 import uvicorn
+
+# Guarantee py-cord presence in cloud environments
+try:
+    import discord
+    if not hasattr(discord, "Bot") or not hasattr(discord, "commands"):
+        import subprocess
+        print("[DEMON BOOT] Restoring py-cord library...")
+        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "discord.py"], capture_output=True)
+        subprocess.run([sys.executable, "-m", "pip", "install", "--force-reinstall", "py-cord"], capture_output=True)
+        import importlib
+        importlib.reload(discord)
+except Exception:
+    pass
+
 import discord
 from discord.ext import commands
 import wavelink
