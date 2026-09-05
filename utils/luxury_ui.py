@@ -9,8 +9,12 @@ import math
 import logging
 from typing import Optional, Any
 import discord
-from discord.ui import View, Button, Modal, InputText, button
-from discord import ButtonStyle, InputTextStyle
+from discord.ui import View, Button, Modal, button
+from discord import ButtonStyle
+
+# Universal InputText compatibility across pycord and discord.py
+InputText = getattr(discord.ui, "InputText", getattr(discord.ui, "TextInput", None))
+InputTextStyle = getattr(discord, "InputTextStyle", getattr(discord, "TextStyle", None))
 import wavelink
 
 from config import (
@@ -281,15 +285,22 @@ class SleepTimerModal(Modal):
     def __init__(self, player: wavelink.Player):
         super().__init__(title="💤 Set Sleep Timer")
         self.player = player
-        self.minutes_input = InputText(
-            label="Duration in Minutes",
-            placeholder="e.g. 15, 30, 45, 60",
-            style=InputTextStyle.short,
-            min_length=1,
-            max_length=3,
-            required=True
-        )
-        self.add_item(self.minutes_input)
+        if InputText is not None:
+            style = getattr(InputTextStyle, "short", None)
+            kwargs = {
+                "label": "Duration in Minutes",
+                "placeholder": "e.g. 15, 30, 45, 60",
+                "min_length": 1,
+                "max_length": 3,
+                "required": True
+            }
+            if style is not None:
+                kwargs["style"] = style
+            try:
+                self.minutes_input = InputText(**kwargs)
+                self.add_item(self.minutes_input)
+            except Exception:
+                pass
 
     async def callback(self, interaction: discord.Interaction):
         val = self.minutes_input.value.strip()
@@ -380,7 +391,7 @@ class MusicControlView(View):
         if not player:
             return
 
-        cog = interaction.client.get_cog("Audio")
+        cog = interaction.client.get_cog("Music") or interaction.client.get_cog("Audio")
         if cog and hasattr(cog, "play_previous_track"):
             success = await cog.play_previous_track(player.guild.id)
             if success:
