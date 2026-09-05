@@ -54,10 +54,10 @@ if WEB_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
 # Bot Instance reference
-bot_instance: Optional[discord.Bot] = None
+bot_instance: Any = None
 
 
-def set_bot_instance(bot: discord.Bot) -> None:
+def set_bot_instance(bot: Any) -> None:
     global bot_instance
     bot_instance = bot
 
