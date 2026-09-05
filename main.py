@@ -151,6 +151,22 @@ async def on_ready():
 
         asyncio.create_task(_reconnect_247())
 
+        # 5. Continuous Keep-Alive Self-Ping (Prevents Render spin-down)
+        async def _keep_alive():
+            await asyncio.sleep(60)
+            import aiohttp
+            ext_url = os.getenv("RENDER_EXTERNAL_URL", "https://kushida.onrender.com")
+            while True:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(ext_url, timeout=10) as r:
+                            logger.info(f"Keep-alive self-ping to {ext_url}: HTTP {r.status}")
+                except Exception as ex:
+                    logger.debug(f"Keep-alive ping: {ex}")
+                await asyncio.sleep(600)
+
+        asyncio.create_task(_keep_alive())
+
     except Exception as e:
         logger.error(f"Failed to connect to Lavalink node at {LAVALINK_URI}: {e}")
         logger.warning("Playback commands will retry upon execution.")
