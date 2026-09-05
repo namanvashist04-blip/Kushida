@@ -16,16 +16,17 @@ import uvicorn
 
 # Guarantee py-cord presence in cloud environments
 try:
+    import nacl
     import discord
     if not hasattr(discord, "Bot") or not hasattr(discord, "commands"):
-        import subprocess
-        print("[DEMON BOOT] Restoring py-cord library...")
-        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "discord.py"], capture_output=True)
-        subprocess.run([sys.executable, "-m", "pip", "install", "--force-reinstall", "py-cord"], capture_output=True)
-        import importlib
-        importlib.reload(discord)
+        raise ImportError("py-cord missing")
 except Exception:
-    pass
+    import subprocess
+    print("[DEMON BOOT] Installing py-cord[voice] and PyNaCl...")
+    subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "discord.py"], capture_output=True)
+    subprocess.run([sys.executable, "-m", "pip", "install", "--force-reinstall", "py-cord[voice]>=2.6.0", "PyNaCl>=1.5.0"], capture_output=True)
+    import importlib
+    importlib.invalidate_caches()
 
 import discord
 from discord.ext import commands
